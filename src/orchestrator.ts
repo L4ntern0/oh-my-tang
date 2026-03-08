@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DEPARTMENTS } from "./agents/departments.js";
 import { MINISTRIES } from "./agents/ministries.js";
+import { TANG_DEFAULT_PLUGIN_CONFIG } from "./config.js";
 import type { TangExecutionRuntime } from "./runtime.js";
 import type {
   AgentMessage,
@@ -45,13 +46,8 @@ import type {
 } from "./types.js";
 
 const DEFAULT_CONFIG: PluginConfig = {
-  maxConcurrentMinistries: 3,
-  maxReviewRounds: 3,
-  tokenBudgetLimit: 100_000,
-  healthRiskProfile: "balanced",
+  ...TANG_DEFAULT_PLUGIN_CONFIG,
   healthRiskProfileSource: "default",
-  enableParallelExecution: true,
-  verbose: false,
 };
 
 let edictCounter = 0;
@@ -433,9 +429,10 @@ export class TangDynastyOrchestrator {
   }
 
   getConfigReport(): TangConfigReport {
-    const warnings = this.config.healthRiskProfileWarning
-      ? [this.config.healthRiskProfileWarning]
-      : [];
+    const warnings = [
+      ...(this.config.configWarnings ?? []),
+      ...(this.config.healthRiskProfileWarning ? [this.config.healthRiskProfileWarning] : []),
+    ];
     const status: TangConfigReport["status"] = warnings.length > 0 ? "warn" : "ok";
 
     return this.sanitizeConfigForDisplay({
@@ -443,6 +440,11 @@ export class TangDynastyOrchestrator {
       status,
       warningCount: warnings.length,
       warnings,
+      ...(this.config.configFile
+        ? {
+            configFile: this.config.configFile,
+          }
+        : {}),
       storage: {
         path: this.storagePath,
         status: this.storageStatus,

@@ -1,0 +1,49 @@
+{
+  "edicts": [
+    {
+      "id": "edict-1",
+      "title": "Release the Tang plugin",
+      "description": "Release the Tang plugin",
+      "status": "completed",
+      "origin": "zhongshu",
+      "messages": [
+        {
+          "role": "zhongshu",
+          "content": "{\"type\":\"plan\",\"tasks\":[{\"ministry\":\"works\",\"description\":\"Build release artifact\"},{\"ministry\":\"rites\",\"description\":\"Prepare release notes\"},{\"ministry\":\"justice\",\"description\":\"Validate release checklist\"}]}",
+          "timestamp": 1700000000000
+        },
+        {
+          "role": "menxia",
+          "content": "{\"verdict\":\"approve\",\"reasons\":[\"Plan approved\"],\"amendments\":[]}",
+          "timestamp": 1700000001000
+        },
+        {
+          "role": "shangshu",
+          "content": "Dispatched release work",
+          "timestamp": 1700000002000
+        },
+        {
+          "role": "shangshu",
+          "content": "{\n  \"edictId\": \"edict-1\",\n  \"status\": \"completed\",\n  \"summary\": {\n    \"totalTasks\": 3,\n    \"completed\": 3,\n    \"failed\": 0,\n    \"elapsedMs\": 6000\n  },\n  \"results\": [\n    {\n      \"ministry\": \"works\",\n      \"status\": \"completed\",\n      \"result\": \"Built release artifact\",\n      \"audit\": {\n        \"executionSource\": \"client\",\n        \"clientStatus\": \"completed\",\n        \"clientRaw\": \"{\\\"source\\\":\\\"runtime-execution\\\",\\\"task\\\":\\\"works\\\"}\",\n        \"clientSessionID\": \"works-session\",\n        \"attemptCount\": 2,\n        \"reviewStatus\": \"approve\",\n        \"reviewReasons\": [\"Execution result satisfies the dispatched task.\"],\n        \"reviewAmendments\": []\n      }\n    },\n    {\n      \"ministry\": \"rites\",\n      \"status\": \"completed\",\n      \"result\": \"Prepared release notes\",\n      \"audit\": {\n        \"executionSource\": \"client\",\n        \"clientStatus\": \"completed\",\n        \"clientRaw\": \"{\\\"source\\\":\\\"runtime-execution\\\",\\\"task\\\":\\\"rites\\\"}\",\n        \"clientSessionID\": \"rites-session\"\n      }\n    },\n    {\n      \"ministry\": \"justice\",\n      \"status\": \"completed\",\n      \"result\": \"Validated release checklist\",\n      \"audit\": {\n        \"executionSource\": \"client\",\n        \"clientStatus\": \"completed\",\n        \"clientRaw\": \"{\\\"source\\\":\\\"runtime-execution\\\",\\\"task\\\":\\\"justice\\\"}\",\n        \"clientSessionID\": \"justice-session\"\n      }\n    }\n  ]\n}",
+          "timestamp": 1700000006000
+        }
+      ],
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000006000
+    }
+  ],
+  "activeTasks": [],
+  "tokenBudget": {
+    "total": 100000,
+    "used": 1200,
+    "perMinistry": {
+      "personnel": 0,
+      "revenue": 0,
+      "rites": 400,
+      "military": 0,
+      "justice": 400,
+      "works": 400
+    }
+  },
+  "phase": "idle"
+}

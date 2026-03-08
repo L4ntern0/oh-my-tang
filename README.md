@@ -31,7 +31,7 @@
 - **运行时 + 本地回退** —— 优先使用 OpenCode runtime session；当 runtime 失败或返回无效结构化结果时，自动切回本地可验证路径
 - **面向操作员的可观察性** —— 通过 `tang_pipeline`、`tang_audit`、`tang_doctor`、`tang_config` 暴露流程快照、审计、健康、异常、配置状态等信息
 - **带重试的复审机制** —— 计划可被打回重拟，执行结果也可被复审并重新分发执行
-- **双层回归覆盖** —— 默认 deterministic regression + 可选 live clean-env OpenCode regression
+- **稳定回归覆盖** —— 默认 deterministic regression + persisted fixture replay，适合作为当前仓库快照的发布前基线
 
 ## 仓库文档
 
@@ -90,6 +90,21 @@ bun add oh-my-tang-dynasty
 ```json
 {
   "plugin": ["oh-my-tang-dynasty"]
+}
+```
+
+插件初始化时会自动在 `opencode.json` **同级目录**生成 `.oh-my-tang.json`（如果文件尚不存在）。如果当前 worktree 下找不到 `opencode.json`，则会回退到 worktree 根目录生成，并通过 `tang_config.warnings` 给出提示。
+
+默认生成的 `.oh-my-tang.json` 如下：
+
+```json
+{
+  "maxConcurrentMinistries": 3,
+  "maxReviewRounds": 3,
+  "tokenBudgetLimit": 100000,
+  "healthRiskProfile": "balanced",
+  "enableParallelExecution": true,
+  "verbose": false
 }
 ```
 
@@ -265,17 +280,17 @@ bun install
 bun run ci
 ```
 
-仓库当前有两层 clean OpenCode 回归验证：
+仓库当前默认提供一层可直接运行的发布前验证基线：
 
+- `bun run typecheck`：对当前实际存在的 TypeScript 入口文件做显式静态检查。
 - `bun test`：包含 deterministic fixture-backed assertions，用来验证持久化 clean-env Tang summary / diagnostics / doctor contract。
-- `bun run test:opencode-clean-regression:live`：运行更重的 live clean-env OpenCode regression，在全新隔离环境里注入本地 npm 包并执行真实的 Phase 1 / Phase 2 流程。
+- `bun run build`：验证打包产物可以正常生成。
 
-之所以把 live clean-env regression 设计成 opt-in，是因为它依赖已安装的 `opencode` CLI 和 provider 凭据（如 `CLIPROXY_BASE_URL`、`CLIPROXY_API_KEY`），运行时间更长，也更容易受到外部模型 / provider 波动影响。
+当前这个公开仓库快照**不包含可直接运行的 live clean-env harness**；如果未来重新引入该路径，建议把对应测试文件与脚本一并纳入仓库后再恢复文档声明。
 
 默认 CI 会运行：
 
-- `bun x tsc --noEmit`
-- `python3 -m py_compile scripts/opencode-clean-regression.py`
+- `bun run typecheck`
 - `bun test`
 - `bun run build`
 
@@ -300,14 +315,26 @@ bun run ci
   maxReviewRounds: 3,            // max 门下省 review / execution re-review iterations
   tokenBudgetLimit: 100_000,     // total token budget
   healthRiskProfile: "balanced", // health risk policy: balanced | strict | relaxed
-  enableParallelExecution: true,  // run ministries in parallel
+  enableParallelExecution: true, // run ministries in parallel
   verbose: false,                 // detailed logging
 }
 ```
 
-你可以随时通过 `tang_config` 查看当前生效的 runtime/configuration surface。当前内置配置字段默认可见，因为它们不直接承载 secrets；同时展示层已经为未来的敏感字段预留了默认脱敏能力。`tang_config.status` 和 `tang_config.warningCount` 会给出最顶层的配置异常摘要，`tang_config.warnings` 提供紧凑列表，而如 `tang_config.health.warning` 这样的字段则保留更局部的解释。
+当前插件配置优先级为：
 
-当你通过打包后的 OpenCode plugin wrapper 使用本项目时，默认 `healthRiskProfile` 为 `balanced`。如果想切换风险策略，可以设置 `TANG_HEALTH_RISK_PROFILE` 为 `strict` 或 `relaxed`。当该环境变量取值不合法（包括空字符串）时，插件会回退到 `balanced`，并通过 `tang_config.health.warning` 与 `tang_doctor.riskPolicy.warning` 给出可见告警；同时 config/doctor 还会暴露 `source` 字段，帮助 operator 判断当前 profile 来自默认值、有效环境覆盖，还是非法值回退。
+1. **内置默认值**
+2. **`.oh-my-tang.json`**
+3. **环境变量覆盖**
+
+目前环境变量层只显式覆盖 `healthRiskProfile`：你可以设置 `TANG_HEALTH_RISK_PROFILE` 为 `strict` 或 `relaxed`。如果该环境变量取值不合法（包括空字符串），插件会回退到当前有效配置值，并通过 `tang_config.health.warning` 与 `tang_doctor.riskPolicy.warning` 给出可见告警。
+
+你可以随时通过 `tang_config` 查看当前生效的 runtime/configuration surface。除了已有的 `status`、`warningCount`、`warnings`、`health.source` 之外，现在还会返回 `configFile` 元数据，帮助 operator 直接判断：
+
+- 实际生效的 `.oh-my-tang.json` 路径
+- 当前配置文件是读取现有文件、自动生成，还是因文件损坏而回退
+- 当前 worktree 下是否找到了 `opencode.json`
+
+当 `.oh-my-tang.json` 缺失时，插件会自动生成；当文件 JSON 非法或字段值非法时，插件会忽略坏配置、保留可用配置，并在 `tang_config.warnings` 中给出说明。
 
 ## 免责声明
 
