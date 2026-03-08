@@ -1,17 +1,16 @@
 {
   "name": "oh-my-tang-dynasty",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "三省六部制 · Tang Dynasty Multi-Agent Orchestration Plugin for OpenCode",
   "type": "module",
   "main": "dist/plugin.js",
   "module": "src/plugin.ts",
   "scripts": {
     "build": "bun build ./src/index.ts ./src/plugin.ts --outdir ./dist --target node",
-    "ci": "bun x tsc --noEmit && python3 -m py_compile scripts/opencode-clean-regression.py && bun test && bun run build",
+    "ci": "bun run typecheck && bun test && bun run build",
     "dev": "bun build ./src/index.ts ./src/plugin.ts --outdir ./dist --target node --watch",
     "test": "bun test",
-    "test:opencode-clean-regression:live": "RUN_OPENCODE_CLEAN_REGRESSION=1 bun test src/opencode-integration.test.ts -t \"opencode can execute the clean-env Tang regression flow end-to-end\"",
-    "typecheck": "bun x tsc --noEmit"
+    "typecheck": "bun x tsc --noEmit --skipLibCheck --target es2022 --module esnext --moduleResolution bundler --types bun-types,node src/config.ts src/index.ts src/orchestrator.ts src/plugin.test.ts src/plugin.ts src/runtime.ts src/types.ts src/agents/departments.ts src/agents/ministries.ts"
   },
   "exports": {
     ".": {

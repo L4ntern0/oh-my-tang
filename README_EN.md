@@ -31,7 +31,7 @@ Multi-agent orchestration plugin for [OpenCode](https://github.com/opencode-ai/o
 - **Runtime + fallback execution** — use real OpenCode runtime sessions when available and deterministic local fallback when they fail
 - **Operator-facing auditability** — `tang_pipeline`, `tang_audit`, `tang_doctor`, `tang_config`, health scoring, anomaly views, and diagnostics
 - **Retry-aware governance** — rejected plans can be re-drafted and rejected execution results can be re-dispatched
-- **Regression coverage** — deterministic default tests plus an opt-in live clean-env OpenCode regression path
+- **Stable regression coverage** — deterministic default tests plus persisted fixture replay, suitable as the release baseline for the current public snapshot
 
 ## Repository Docs
 
@@ -92,6 +92,21 @@ Register it in your project `opencode.json`:
 ```json
 {
   "plugin": ["oh-my-tang-dynasty"]
+}
+```
+
+On initialization, the plugin auto-generates `.oh-my-tang.json` next to `opencode.json` when the file is missing. If no `opencode.json` can be found under the current worktree, it falls back to generating the file at the worktree root and surfaces a warning through `tang_config.warnings`.
+
+The generated `.oh-my-tang.json` looks like this:
+
+```json
+{
+  "maxConcurrentMinistries": 3,
+  "maxReviewRounds": 3,
+  "tokenBudgetLimit": 100000,
+  "healthRiskProfile": "balanced",
+  "enableParallelExecution": true,
+  "verbose": false
 }
 ```
 
@@ -263,17 +278,17 @@ bun install
 bun run ci
 ```
 
-The repository contains two regression layers for the clean OpenCode flow:
+The repository currently ships one directly runnable release baseline:
 
-- `bun test` includes deterministic fixture-backed assertions for the persisted clean-env Tang summary / diagnostics / doctor contract
-- `bun run test:opencode-clean-regression:live` runs the heavier live clean-env OpenCode regression that creates a fresh isolated environment, injects the local npm package, and executes the real Phase 1 / Phase 2 flow against a configured provider
+- `bun run typecheck` performs an explicit static check against the TypeScript entry files that actually exist in this snapshot
+- `bun test` covers the deterministic fixture-backed assertions for the persisted clean-env Tang summary / diagnostics / doctor contract
+- `bun run build` verifies that the published bundle can be generated successfully
 
-The live clean-env regression is opt-in because it depends on an installed `opencode` CLI plus provider access (`CLIPROXY_BASE_URL` and `CLIPROXY_API_KEY`), can take several minutes, and is subject to external model/provider variability in a way the deterministic default suite is not.
+This public repository snapshot does **not** currently include a runnable live clean-env harness. If that path is reintroduced later, the matching test file and script should be restored together with the docs.
 
 The default CI path runs:
 
-- `bun x tsc --noEmit`
-- `python3 -m py_compile scripts/opencode-clean-regression.py`
+- `bun run typecheck`
 - `bun test`
 - `bun run build`
 
@@ -305,7 +320,21 @@ The plugin maps Tang Dynasty governance into AI orchestration:
 
 You can inspect the effective runtime/configuration surface at any time with `tang_config`.
 
-When using the packaged OpenCode plugin wrapper, the default `healthRiskProfile` is `balanced`. Set `TANG_HEALTH_RISK_PROFILE` to `strict` or `relaxed` when you want the plugin tools to use a different named risk policy. If `TANG_HEALTH_RISK_PROFILE` is set to an unsupported value, including an empty string, the plugin falls back to `balanced` and surfaces an operator-visible warning through `tang_config.health.warning` and `tang_doctor.riskPolicy.warning`.
+The plugin resolves configuration in this order:
+
+1. built-in defaults
+2. `.oh-my-tang.json`
+3. environment overrides
+
+Right now the environment layer explicitly overrides only `healthRiskProfile`: set `TANG_HEALTH_RISK_PROFILE` to `strict` or `relaxed` when needed. If the env var is invalid, including an empty string, the plugin falls back to the currently effective profile and surfaces a warning through `tang_config.health.warning` and `tang_doctor.riskPolicy.warning`.
+
+In addition to `status`, `warningCount`, `warnings`, and `health.source`, `tang_config` now reports `configFile` metadata so operators can see:
+
+- which `.oh-my-tang.json` path is active
+- whether the file was auto-generated, read from disk, or bypassed after an invalid-file fallback
+- whether `opencode.json` was successfully discovered in the current worktree
+
+If `.oh-my-tang.json` is missing, Tang creates it automatically. If the file contains invalid JSON or invalid field values, Tang ignores the bad values, keeps usable settings, and reports the issue through `tang_config.warnings`.
 
 ## Disclaimer
 

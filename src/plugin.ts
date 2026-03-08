@@ -3,6 +3,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { DEPARTMENTS } from "./agents/departments.js";
 import { MINISTRIES } from "./agents/ministries.js";
+import { resolveTangConfig } from "./config.js";
 import { TangDynastyOrchestrator } from "./orchestrator.js";
 import { createOpenCodeTangRuntime } from "./runtime.js";
 import type { HealthRiskProfile, HealthRiskProfileSource } from "./types.js";
@@ -19,11 +20,13 @@ function isHealthRiskProfile(value: string): value is HealthRiskProfile {
   return HEALTH_RISK_PROFILES.some((profile) => profile === value);
 }
 
-function resolveHealthRiskProfileFromEnv(): HealthRiskProfileResolution {
+function resolveHealthRiskProfileFromEnv(
+  fallback: Pick<HealthRiskProfileResolution, "profile" | "source">,
+): HealthRiskProfileResolution {
   const configured = process.env.TANG_HEALTH_RISK_PROFILE;
 
   if (configured === undefined) {
-    return { profile: "balanced", source: "default" };
+    return fallback;
   }
 
   if (isHealthRiskProfile(configured)) {
@@ -31,25 +34,31 @@ function resolveHealthRiskProfileFromEnv(): HealthRiskProfileResolution {
   }
 
   return {
-    profile: "balanced",
+    profile: fallback.profile,
     source: "env-invalid-fallback",
-    warning: `Invalid TANG_HEALTH_RISK_PROFILE="${configured}"; falling back to "balanced". Supported values: ${HEALTH_RISK_PROFILES.join(", ")}.`,
+    warning: `Invalid TANG_HEALTH_RISK_PROFILE="${configured}"; falling back to "${fallback.profile}". Supported values: ${HEALTH_RISK_PROFILES.join(", ")}.`,
   };
 }
 
 const TangDynastyPlugin: Plugin = async (input) => {
   const runtime = createOpenCodeTangRuntime(input.client, input.worktree);
-  const healthRiskProfile = resolveHealthRiskProfileFromEnv();
+  const resolvedConfig = resolveTangConfig(input.worktree);
+  const resolvedHealthRiskProfile = resolveHealthRiskProfileFromEnv({
+    profile: resolvedConfig.config.healthRiskProfile ?? "balanced",
+    source: resolvedConfig.config.healthRiskProfileSource ?? "default",
+  });
   const orchestrator = new TangDynastyOrchestrator({
     storagePath: join(input.worktree, ".tang-dynasty", "state.json"),
-    maxConcurrentMinistries: 3,
-    maxReviewRounds: 3,
-    tokenBudgetLimit: 100_000,
-    healthRiskProfile: healthRiskProfile.profile,
-    healthRiskProfileSource: healthRiskProfile.source,
-    healthRiskProfileWarning: healthRiskProfile.warning,
-    enableParallelExecution: true,
-    verbose: false,
+    maxConcurrentMinistries: resolvedConfig.config.maxConcurrentMinistries,
+    maxReviewRounds: resolvedConfig.config.maxReviewRounds,
+    tokenBudgetLimit: resolvedConfig.config.tokenBudgetLimit,
+    healthRiskProfile: resolvedHealthRiskProfile.profile,
+    healthRiskProfileSource: resolvedHealthRiskProfile.source,
+    healthRiskProfileWarning: resolvedHealthRiskProfile.warning,
+    enableParallelExecution: resolvedConfig.config.enableParallelExecution,
+    verbose: resolvedConfig.config.verbose,
+    configWarnings: resolvedConfig.warnings,
+    configFile: resolvedConfig.configFile,
   }, undefined, runtime);
 
   return {
