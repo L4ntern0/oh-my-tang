@@ -1,7 +1,11 @@
-import type { MinistryConfig } from "../types.js";
+import type {
+  MinistryConfig,
+  MinistryConfigInput,
+  ResolvedMinistryConfigMap,
+} from "../types.js";
 
-export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
-  personnel: {
+const DEFAULT_MINISTRY_ENTRIES: readonly MinistryConfig[] = [
+  {
     id: "personnel",
     name: "Personnel",
     chineseName: "吏部",
@@ -9,7 +13,7 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Coordinate ministry assignment and sequencing.",
     tools: ["planning", "delegation"],
   },
-  revenue: {
+  {
     id: "revenue",
     name: "Revenue",
     chineseName: "户部",
@@ -17,7 +21,7 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Track token budgets and resource estimates.",
     tools: ["budgeting", "estimation"],
   },
-  rites: {
+  {
     id: "rites",
     name: "Rites",
     chineseName: "礼部",
@@ -25,7 +29,7 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Handle formatting, protocol, and style checks.",
     tools: ["formatting", "linting"],
   },
-  military: {
+  {
     id: "military",
     name: "Military",
     chineseName: "兵部",
@@ -33,7 +37,7 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Execute implementation-focused work.",
     tools: ["execution", "orchestration"],
   },
-  justice: {
+  {
     id: "justice",
     name: "Justice",
     chineseName: "刑部",
@@ -41,7 +45,7 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Validate outputs, run checks, and enforce quality gates.",
     tools: ["validation", "testing"],
   },
-  works: {
+  {
     id: "works",
     name: "Works",
     chineseName: "工部",
@@ -49,4 +53,51 @@ export const MINISTRIES: Record<MinistryConfig["id"], MinistryConfig> = {
     systemPrompt: "Perform code, build, and file-generation work.",
     tools: ["coding", "builds"],
   },
-};
+] as const;
+
+export function createMinistryMap(
+  ministries: readonly MinistryConfig[] = DEFAULT_MINISTRY_ENTRIES,
+): ResolvedMinistryConfigMap {
+  return ministries.reduce((resolved, ministry) => {
+    resolved[ministry.id] = {
+      ...ministry,
+      tools: [...ministry.tools],
+    };
+    return resolved;
+  }, {} as ResolvedMinistryConfigMap);
+}
+
+export function cloneMinistryMap(
+  ministries: ResolvedMinistryConfigMap = createMinistryMap(),
+): ResolvedMinistryConfigMap {
+  return createMinistryMap(Object.values(ministries));
+}
+
+export function createMinistryInputs(
+  ministries: readonly MinistryConfig[] = DEFAULT_MINISTRY_ENTRIES,
+): MinistryConfigInput[] {
+  return ministries.map((ministry) => ({
+    id: ministry.id,
+    name: ministry.name,
+    chineseName: ministry.chineseName,
+    systemPrompt: ministry.systemPrompt,
+    tools: [...ministry.tools],
+  }));
+}
+
+export function createDefaultMinistryInputs(): MinistryConfigInput[] {
+  return createMinistryInputs();
+}
+
+export function resolveMinistryCatalog(
+  ministries: readonly MinistryConfigInput[] = createDefaultMinistryInputs(),
+): ResolvedMinistryConfigMap {
+  return createMinistryMap(ministries.map((ministry) => ({
+    ...ministry,
+    department: "shangshu" as const,
+    tools: [...ministry.tools],
+  })));
+}
+
+export const MINISTRIES = createMinistryMap();
+export const DEFAULT_MINISTRIES = MINISTRIES;

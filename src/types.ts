@@ -19,15 +19,18 @@
 
 export type DepartmentId = "zhongshu" | "menxia" | "shangshu";
 
-export type MinistryId =
-  | "personnel" // 吏部
-  | "revenue"   // 户部
-  | "rites"     // 礼部
-  | "military"  // 兵部
-  | "justice"   // 刑部
-  | "works";    // 工部
+export type MinistryId = string;
 
 export type AgentRole = DepartmentId | MinistryId;
+
+export type TangRuntimeAgentId = DepartmentId | MinistryId;
+
+export interface TangModelConfig {
+  providerID: string;
+  modelID: string;
+}
+
+export type TangAgentModelConfigMap = Partial<Record<TangRuntimeAgentId, TangModelConfig>>;
 
 export interface AgentMessage {
   role: AgentRole;
@@ -74,9 +77,12 @@ export interface TaskExecutionAudit {
   executionSource: "client" | "local";
   fallbackFrom?: "client";
   clientStatus?: "completed" | "failed";
+  clientAttemptCount?: number;
   clientError?: string;
   clientRaw?: string;
   clientSessionID?: string;
+  clientProviderID?: string;
+  clientModelID?: string;
   attemptCount?: number;
   reviewStatus?: "approve" | "reject";
   reviewReasons?: string[];
@@ -114,6 +120,8 @@ export interface AuditTimelineEvent {
   fallback?: "local";
   fallbackFrom?: "client";
   sessionID?: string;
+  providerID?: string;
+  modelID?: string;
   error?: string;
 }
 
@@ -129,8 +137,11 @@ export interface MinistryAuditDiagnosticsEntry {
   status: MinistryTask["status"];
   executionSource: "client" | "local";
   fallbackFrom?: "client";
+  clientAttemptCount?: number;
   clientError?: string;
   clientSessionID?: string;
+  clientProviderID?: string;
+  clientModelID?: string;
   clientRaw?: string;
   attemptCount?: number;
   reviewStatus?: "approve" | "reject";
@@ -290,6 +301,10 @@ export interface TangConfigReport {
     verbose: boolean;
     meaning: string;
   };
+  models: {
+    agentModels: TangAgentModelConfigMap;
+    meaning: string;
+  };
 }
 
 export type AuditTrailView = "entries" | "summary" | "timeline" | "anomaly" | "hotspots" | "health" | "diagnostics";
@@ -330,6 +345,14 @@ export interface DepartmentConfig {
   systemPrompt: string;
 }
 
+export interface DepartmentConfigInput {
+  name?: string;
+  chineseName?: string;
+  systemPrompt?: string;
+}
+
+export type ResolvedDepartmentConfigMap = Record<DepartmentId, DepartmentConfig>;
+
 export interface MinistryConfig {
   id: MinistryId;
   name: string;
@@ -338,6 +361,16 @@ export interface MinistryConfig {
   systemPrompt: string;
   tools: string[];
 }
+
+export interface MinistryConfigInput {
+  id: MinistryId;
+  name: string;
+  chineseName: string;
+  systemPrompt: string;
+  tools: string[];
+}
+
+export type ResolvedMinistryConfigMap = Record<MinistryId, MinistryConfig>;
 
 export interface OrchestrationState {
   edicts: Map<string, Edict>;
@@ -395,7 +428,7 @@ export interface TangPipelineReport {
 export interface TokenBudget {
   total: number;
   used: number;
-  perMinistry: Record<MinistryId, number>;
+  perMinistry: Record<string, number>;
 }
 
 export interface PluginConfig {
@@ -407,6 +440,9 @@ export interface PluginConfig {
   healthRiskProfileWarning?: string;
   enableParallelExecution: boolean;
   verbose: boolean;
+  departments: ResolvedDepartmentConfigMap;
+  ministries: ResolvedMinistryConfigMap;
+  agentModels: TangAgentModelConfigMap;
   configWarnings?: string[];
   configFile?: TangConfigFileMetadata;
 }

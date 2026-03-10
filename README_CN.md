@@ -104,7 +104,69 @@ bun add oh-my-tang-dynasty
   "tokenBudgetLimit": 100000,
   "healthRiskProfile": "balanced",
   "enableParallelExecution": true,
-  "verbose": false
+  "verbose": false,
+  "agentModels": {},
+  "departments": {
+    "zhongshu": {
+      "name": "Zhongshu",
+      "chineseName": "中书省",
+      "systemPrompt": "Draft a structured Tang edict plan with clear ministry tasks."
+    },
+    "menxia": {
+      "name": "Menxia",
+      "chineseName": "门下省",
+      "systemPrompt": "Review Tang plans and execution results for approval, rejection, and amendments."
+    },
+    "shangshu": {
+      "name": "Shangshu",
+      "chineseName": "尚书省",
+      "systemPrompt": "Dispatch approved Tang work to the correct ministries and summarize final outcomes."
+    }
+  },
+  "ministries": [
+    {
+      "id": "personnel",
+      "name": "Personnel",
+      "chineseName": "吏部",
+      "systemPrompt": "Coordinate ministry assignment and sequencing.",
+      "tools": ["planning", "delegation"]
+    },
+    {
+      "id": "revenue",
+      "name": "Revenue",
+      "chineseName": "户部",
+      "systemPrompt": "Track token budgets and resource estimates.",
+      "tools": ["budgeting", "estimation"]
+    },
+    {
+      "id": "rites",
+      "name": "Rites",
+      "chineseName": "礼部",
+      "systemPrompt": "Handle formatting, protocol, and style checks.",
+      "tools": ["formatting", "linting"]
+    },
+    {
+      "id": "military",
+      "name": "Military",
+      "chineseName": "兵部",
+      "systemPrompt": "Execute implementation-focused work.",
+      "tools": ["execution", "orchestration"]
+    },
+    {
+      "id": "justice",
+      "name": "Justice",
+      "chineseName": "刑部",
+      "systemPrompt": "Validate outputs, run checks, and enforce quality gates.",
+      "tools": ["validation", "testing"]
+    },
+    {
+      "id": "works",
+      "name": "Works",
+      "chineseName": "工部",
+      "systemPrompt": "Perform code, build, and file-generation work.",
+      "tools": ["coding", "builds"]
+    }
+  ]
 }
 ```
 
@@ -118,6 +180,8 @@ import { TangDynastyOrchestrator } from "oh-my-tang-dynasty/lib";
 
 - **OpenCode runtime 模式** —— 当插件运行在 OpenCode 中时，会使用 `input.client` 为起草、审核和六部执行创建临时会话。
 - **确定性本地回退模式** —— 当 runtime 无法返回有效结构化结果，或 runtime 执行失败 / 抛错时，编排器会退回本地 Tang heuristics，保证流程仍然可用、可测、可追踪。
+
+`departments` 可覆盖三省的 system prompt；`ministries` 可直接增减部门数量并定义每个部的名称、prompt 与工具列表。`agentModels` 则可为 `zhongshu`、`menxia`、`shangshu` 和当前已配置的各个 ministry id 指定不同的 OpenCode `providerID` / `modelID`。当某个角色配置了模型覆盖时，Tang 会在对应 runtime prompt 上附加该模型；未配置的角色继续使用宿主默认模型。
 
 治理环路还支持两条更深的控制路径：
 
@@ -309,6 +373,8 @@ bun run ci
 
 ## 配置
 
+默认推荐配置（所有角色跟随使用者自己的 OpenCode 默认模型）：
+
 ```typescript
 {
   maxConcurrentMinistries: 3,    // parallel ministry execution slots
@@ -316,9 +382,63 @@ bun run ci
   tokenBudgetLimit: 100_000,     // total token budget
   healthRiskProfile: "balanced", // health risk policy: balanced | strict | relaxed
   enableParallelExecution: true, // run ministries in parallel
-  verbose: false,                 // detailed logging
+  verbose: false,                // detailed logging
+  departments: {
+    zhongshu: { systemPrompt: "Draft a structured Tang edict plan with clear ministry tasks." },
+    menxia: { systemPrompt: "Review Tang plans and execution results for approval, rejection, and amendments." },
+    shangshu: { systemPrompt: "Dispatch approved Tang work to the correct ministries and summarize final outcomes." },
+  },
+  ministries: [
+    { id: "works", name: "Works", chineseName: "工部", systemPrompt: "Perform code, build, and file-generation work.", tools: ["coding", "builds"] },
+    // add or remove ministries here
+  ],
+  agentModels: {},
 }
 ```
+
+如果你想显式覆盖某些角色模型，可以使用下面这个模板：
+
+```typescript
+{
+  maxConcurrentMinistries: 3,    // parallel ministry execution slots
+  maxReviewRounds: 3,            // max 门下省 review / execution re-review iterations
+  tokenBudgetLimit: 100_000,     // total token budget
+  healthRiskProfile: "balanced", // health risk policy: balanced | strict | relaxed
+  enableParallelExecution: true, // run ministries in parallel
+  verbose: false,                // detailed logging
+  departments: {
+    zhongshu: { systemPrompt: "<CUSTOM_PROMPT>" },
+    menxia: { systemPrompt: "<CUSTOM_PROMPT>" },
+    shangshu: { systemPrompt: "<CUSTOM_PROMPT>" },
+  },
+  ministries: [
+    { id: "works", name: "Works", chineseName: "工部", systemPrompt: "<CUSTOM_PROMPT>", tools: ["coding", "builds"] },
+    { id: "archives", name: "Archives", chineseName: "档案部", systemPrompt: "<CUSTOM_PROMPT>", tools: ["archiving"] },
+  ],
+  agentModels: {                 // optional per-role OpenCode model overrides
+    zhongshu: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
+    menxia: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
+    shangshu: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
+    archives: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
+  },
+}
+```
+
+`agentModels` 中各字段含义如下：
+
+| 字段 | 中文角色 | 职责 |
+|---|---|---|
+| `zhongshu` | 中书省 | 起草计划 / 拟定任务分解 |
+| `menxia` | 门下省 | 审核计划与执行结果 |
+| `shangshu` | 尚书省 | 派发任务并汇总结案 |
+| `personnel` | 吏部 | 分工、调度、执行顺序协调 |
+| `revenue` | 户部 | 预算、资源与 token 估算 |
+| `rites` | 礼部 | 格式、规范、风格检查 |
+| `military` | 兵部 | 偏执行型实现工作 |
+| `justice` | 刑部 | 校验、测试、质量把关 |
+| `works` | 工部 | 代码、文件生成、构建工作 |
+
+如果你想让所有角色都跟随使用者自己的 OpenCode 默认模型，直接保留 `agentModels: {}` 即可；只有在你想对某个角色单独指定模型时，才需要填写对应字段。
 
 当前插件配置优先级为：
 
@@ -328,13 +448,14 @@ bun run ci
 
 目前环境变量层只显式覆盖 `healthRiskProfile`：你可以设置 `TANG_HEALTH_RISK_PROFILE` 为 `strict` 或 `relaxed`。如果该环境变量取值不合法（包括空字符串），插件会回退到当前有效配置值，并通过 `tang_config.health.warning` 与 `tang_doctor.riskPolicy.warning` 给出可见告警。
 
-你可以随时通过 `tang_config` 查看当前生效的 runtime/configuration surface。除了已有的 `status`、`warningCount`、`warnings`、`health.source` 之外，现在还会返回 `configFile` 元数据，帮助 operator 直接判断：
+你可以随时通过 `tang_config` 查看当前生效的 runtime/configuration surface。除了已有的 `status`、`warningCount`、`warnings`、`health.source` 之外，现在还会返回 `configFile` 与 `models` 元数据，帮助 operator 直接判断：
 
 - 实际生效的 `.oh-my-tang.json` 路径
 - 当前配置文件是读取现有文件、自动生成，还是因文件损坏而回退
 - 当前 worktree 下是否找到了 `opencode.json`
+- 当前为哪些 Tang runtime 角色配置了独立模型覆盖
 
-当 `.oh-my-tang.json` 缺失时，插件会自动生成；当文件 JSON 非法或字段值非法时，插件会忽略坏配置、保留可用配置，并在 `tang_config.warnings` 中给出说明。
+当 `.oh-my-tang.json` 缺失时，插件会自动生成；当文件 JSON 非法或字段值非法时，插件会忽略坏配置、保留可用配置，并在 `tang_config.warnings` 中给出说明。`agentModels` 目前支持 `zhongshu`、`menxia`、`shangshu` 与当前 `ministries` 中声明的所有 ministry id，其中 `shangshu` 的独立模型覆盖会用于 runtime-backed dispatch 阶段。
 
 ## 免责声明
 
