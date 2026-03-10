@@ -107,27 +107,74 @@ The generated `.oh-my-tang.json` looks like this:
   "healthRiskProfile": "balanced",
   "enableParallelExecution": true,
   "verbose": false,
-  "agentModels": {}
+  "agentModels": {},
+  "departments": {
+    "zhongshu": {
+      "name": "Zhongshu",
+      "chineseName": "中书省",
+      "systemPrompt": "Draft a structured Tang edict plan with clear ministry tasks."
+    },
+    "menxia": {
+      "name": "Menxia",
+      "chineseName": "门下省",
+      "systemPrompt": "Review Tang plans and execution results for approval, rejection, and amendments."
+    },
+    "shangshu": {
+      "name": "Shangshu",
+      "chineseName": "尚书省",
+      "systemPrompt": "Dispatch approved Tang work to the correct ministries and summarize final outcomes."
+    }
+  },
+  "ministries": [
+    {
+      "id": "personnel",
+      "name": "Personnel",
+      "chineseName": "吏部",
+      "systemPrompt": "Coordinate ministry assignment and sequencing.",
+      "tools": ["planning", "delegation"]
+    },
+    {
+      "id": "revenue",
+      "name": "Revenue",
+      "chineseName": "户部",
+      "systemPrompt": "Track token budgets and resource estimates.",
+      "tools": ["budgeting", "estimation"]
+    },
+    {
+      "id": "rites",
+      "name": "Rites",
+      "chineseName": "礼部",
+      "systemPrompt": "Handle formatting, protocol, and style checks.",
+      "tools": ["formatting", "linting"]
+    },
+    {
+      "id": "military",
+      "name": "Military",
+      "chineseName": "兵部",
+      "systemPrompt": "Execute implementation-focused work.",
+      "tools": ["execution", "orchestration"]
+    },
+    {
+      "id": "justice",
+      "name": "Justice",
+      "chineseName": "刑部",
+      "systemPrompt": "Validate outputs, run checks, and enforce quality gates.",
+      "tools": ["validation", "testing"]
+    },
+    {
+      "id": "works",
+      "name": "Works",
+      "chineseName": "工部",
+      "systemPrompt": "Perform code, build, and file-generation work.",
+      "tools": ["coding", "builds"]
+    }
+  ]
 }
 ```
+
+`departments` lets you override the three department prompts, and `ministries` lets you add or remove execution ministries entirely. `agentModels` can target `zhongshu`, `menxia`, `shangshu`, plus any ministry IDs currently declared in `ministries`.
 
 If you want library imports instead of plugin loading:
-
-Recommended default configuration (all roles follow the user's own OpenCode default model):
-
-```ts
-{
-  maxConcurrentMinistries: 3,
-  maxReviewRounds: 3,
-  tokenBudgetLimit: 100_000,
-  healthRiskProfile: "balanced",
-  enableParallelExecution: true,
-  verbose: false,
-  agentModels: {},
-}
-```
-
-If you want explicit per-role overrides, use this template:
 
 ```ts
 import { TangDynastyOrchestrator } from "oh-my-tang-dynasty/lib";
@@ -138,7 +185,7 @@ The plugin supports a hybrid execution model:
 - **OpenCode runtime mode** — when loaded inside OpenCode, it uses `input.client` to create ephemeral sessions for planning, review, and ministry execution
 - **Deterministic fallback mode** — if the runtime client cannot return valid structured output, or if a runtime ministry execution fails or throws, the orchestrator falls back to local Tang heuristics so the pipeline remains usable and testable
 
-`agentModels` can optionally assign a different OpenCode `providerID` / `modelID` to `zhongshu`, `menxia`, `shangshu`, and each ministry. When a role-specific override is present, Tang attaches that model to the corresponding runtime prompt; unconfigured roles continue to use the host default model.
+`departments` can override the three department system prompts, and `ministries` can add or remove ministries while defining each ministry's name, prompt, and tool list. `agentModels` can then assign a different OpenCode `providerID` / `modelID` to `zhongshu`, `menxia`, `shangshu`, and any currently configured ministry id. When a role-specific override is present, Tang attaches that model to the corresponding runtime prompt; unconfigured roles continue to use the host default model.
 
 The governance loop also supports two deeper control paths:
 
@@ -336,6 +383,15 @@ Recommended default configuration (all roles follow the user's own OpenCode defa
   healthRiskProfile: "balanced",
   enableParallelExecution: true,
   verbose: false,
+  departments: {
+    zhongshu: { systemPrompt: "Draft a structured Tang edict plan with clear ministry tasks." },
+    menxia: { systemPrompt: "Review Tang plans and execution results for approval, rejection, and amendments." },
+    shangshu: { systemPrompt: "Dispatch approved Tang work to the correct ministries and summarize final outcomes." },
+  },
+  ministries: [
+    { id: "works", name: "Works", chineseName: "工部", systemPrompt: "Perform code, build, and file-generation work.", tools: ["coding", "builds"] },
+    // add or remove ministries here
+  ],
   agentModels: {},
 }
 ```
@@ -350,11 +406,20 @@ If you want explicit per-role overrides, use this template:
   healthRiskProfile: "balanced",
   enableParallelExecution: true,
   verbose: false,
+  departments: {
+    zhongshu: { systemPrompt: "<CUSTOM_PROMPT>" },
+    menxia: { systemPrompt: "<CUSTOM_PROMPT>" },
+    shangshu: { systemPrompt: "<CUSTOM_PROMPT>" },
+  },
+  ministries: [
+    { id: "works", name: "Works", chineseName: "工部", systemPrompt: "<CUSTOM_PROMPT>", tools: ["coding", "builds"] },
+    { id: "archives", name: "Archives", chineseName: "档案部", systemPrompt: "<CUSTOM_PROMPT>", tools: ["archiving"] },
+  ],
   agentModels: {
     zhongshu: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
     menxia: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
     shangshu: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
-    works: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
+    archives: { providerID: "<YOUR_PROVIDER>", modelID: "<YOUR_MODEL>" },
   },
 }
 ```
@@ -392,7 +457,7 @@ In addition to `status`, `warningCount`, `warnings`, and `health.source`, `tang_
 - whether `opencode.json` was successfully discovered in the current worktree
 - which Tang runtime roles currently have model overrides
 
-If `.oh-my-tang.json` is missing, Tang creates it automatically. If the file contains invalid JSON or invalid field values, Tang ignores the bad values, keeps usable settings, and reports the issue through `tang_config.warnings`. `agentModels` currently supports `zhongshu`, `menxia`, `shangshu`, and the six ministries; the `shangshu` override is applied during the runtime-backed dispatch stage.
+If `.oh-my-tang.json` is missing, Tang creates it automatically. If the file contains invalid JSON or invalid field values, Tang ignores the bad values, keeps usable settings, and reports the issue through `tang_config.warnings`. `agentModels` currently supports `zhongshu`, `menxia`, `shangshu`, and every ministry id declared in `ministries`; the `shangshu` override is applied during the runtime-backed dispatch stage.
 
 ## Disclaimer
 

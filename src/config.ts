@@ -1,13 +1,17 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import { dirname, join } from "node:path";
+import { cloneDepartmentMap, DEPARTMENTS } from "./agents/departments.js";
+import { cloneMinistryMap, createMinistryInputs, MINISTRIES } from "./agents/ministries.js";
 import type {
-  TangAgentModelConfigMap,
+  DepartmentConfigInput,
   HealthRiskProfile,
   HealthRiskProfileSource,
   PluginConfig,
-  TangModelConfig,
+  ResolvedDepartmentConfigMap,
+  ResolvedMinistryConfigMap,
+  TangAgentModelConfigMap,
   TangConfigFileMetadata,
-  TangRuntimeAgentId,
+  TangModelConfig,
 } from "./types.js";
 
 export const TANG_CONFIG_FILE_NAME = ".oh-my-tang.json";
@@ -15,8 +19,9 @@ export const TANG_CONFIG_FILE_MEANING =
   "Shows where Tang reads editable runtime settings and whether the config file had to be generated or recovered.";
 
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".tang-dynasty", "dist"]);
+const DEPARTMENT_IDS = ["zhongshu", "menxia", "shangshu"] as const;
 
-export const TANG_DEFAULT_PLUGIN_CONFIG: Pick<
+type TangResolvedCoreConfig = Pick<
   PluginConfig,
   | "maxConcurrentMinistries"
   | "maxReviewRounds"
@@ -25,19 +30,23 @@ export const TANG_DEFAULT_PLUGIN_CONFIG: Pick<
   | "enableParallelExecution"
   | "verbose"
   | "agentModels"
-> = {
-  maxConcurrentMinistries: 3,
-  maxReviewRounds: 3,
-  tokenBudgetLimit: 100_000,
-  healthRiskProfile: "balanced",
-  enableParallelExecution: true,
-  verbose: false,
-  agentModels: {},
+  | "departments"
+  | "ministries"
+>;
+
+type TangSerializedDepartmentConfig = Omit<PluginConfig["departments"][keyof PluginConfig["departments"]], "id">;
+
+type TangSerializedFileConfig = {
+  maxConcurrentMinistries: number;
+  maxReviewRounds: number;
+  tokenBudgetLimit: number;
+  healthRiskProfile: HealthRiskProfile;
+  enableParallelExecution: boolean;
+  verbose: boolean;
+  agentModels: TangAgentModelConfigMap;
+  departments: Record<(typeof DEPARTMENT_IDS)[number], TangSerializedDepartmentConfig>;
+  ministries: ReturnType<typeof createMinistryInputs>;
 };
-
-type TangEditableConfig = typeof TANG_DEFAULT_PLUGIN_CONFIG;
-
-type TangConfigField = keyof TangEditableConfig;
 
 type ResolvedTangConfig = {
   config: Partial<PluginConfig>;
@@ -45,24 +54,47 @@ type ResolvedTangConfig = {
   warnings: string[];
 };
 
-function isHealthRiskProfile(value: unknown): value is HealthRiskProfile {
-  return value === "balanced" || value === "strict" || value === "relaxed";
+function createDefaultPluginConfig(): TangResolvedCoreConfig {
+  return {
+    maxConcurrentMinistries: 3,
+    maxReviewRounds: 3,
+    tokenBudgetLimit: 100_000,
+    healthRiskProfile: "balanced",
+    enableParallelExecution: true,
+    verbose: false,
+    agentModels: {},
+    departments: cloneDepartmentMap(DEPARTMENTS),
+    ministries: cloneMinistryMap(MINISTRIES),
+  };
 }
 
-const TANG_RUNTIME_AGENT_IDS = new Set<TangRuntimeAgentId>([
-  "zhongshu",
-  "menxia",
-  "shangshu",
-  "personnel",
-  "revenue",
-  "rites",
-  "military",
-  "justice",
-  "works",
-]);
+function createDefaultFileConfig(): TangSerializedFileConfig {
+  return {
+    maxConcurrentMinistries: 3,
+    maxReviewRounds: 3,
+    tokenBudgetLimit: 100_000,
+    healthRiskProfile: "balanced",
+    enableParallelExecution: true,
+    verbose: false,
+    agentModels: {},
+    departments: Object.fromEntries(
+      Object.values(DEPARTMENTS).map((department) => [
+        department.id,
+        {
+          name: department.name,
+          chineseName: department.chineseName,
+          systemPrompt: department.systemPrompt,
+        },
+      ]),
+    ) as TangSerializedFileConfig["departments"],
+    ministries: createMinistryInputs(Object.values(MINISTRIES)),
+  };
+}
 
-function isTangRuntimeAgentId(value: string): value is TangRuntimeAgentId {
-  return TANG_RUNTIME_AGENT_IDS.has(value as TangRuntimeAgentId);
+export const TANG_DEFAULT_PLUGIN_CONFIG = createDefaultPluginConfig();
+
+function isHealthRiskProfile(value: unknown): value is HealthRiskProfile {
+  return value === "balanced" || value === "strict" || value === "relaxed";
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -77,27 +109,6 @@ function isTangModelConfig(value: unknown): value is TangModelConfig {
     && isNonEmptyString((value as TangModelConfig).providerID)
     && isNonEmptyString((value as TangModelConfig).modelID),
   );
-}
-
-function resolveAgentModels(value: unknown): TangAgentModelConfigMap {
-  const resolved: TangAgentModelConfigMap = {};
-
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return resolved;
-  }
-
-  for (const [agentId, config] of Object.entries(value)) {
-    if (!isTangRuntimeAgentId(agentId) || !isTangModelConfig(config)) {
-      continue;
-    }
-
-    resolved[agentId] = {
-      providerID: config.providerID.trim(),
-      modelID: config.modelID.trim(),
-    };
-  }
-
-  return resolved;
 }
 
 function findOpencodeConfig(worktree: string): string | undefined {
@@ -148,70 +159,248 @@ function createConfigMetadata(
   };
 }
 
-function validateConfigField(key: TangConfigField, value: unknown): value is TangEditableConfig[TangConfigField] {
-  switch (key) {
-    case "maxConcurrentMinistries":
-    case "maxReviewRounds":
-    case "tokenBudgetLimit":
-      return Number.isInteger(value) && Number(value) > 0;
-    case "enableParallelExecution":
-    case "verbose":
-      return typeof value === "boolean";
-    case "healthRiskProfile":
-      return isHealthRiskProfile(value);
-    case "agentModels":
-      return Boolean(value && typeof value === "object" && !Array.isArray(value));
-  }
+function hasOwn(config: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(config, key);
 }
 
-function validateConfigObject(parsed: unknown): Pick<PluginConfig, keyof TangEditableConfig> & {
-  healthRiskProfileSource: HealthRiskProfileSource;
-} {
-  const resolved = {
-    ...TANG_DEFAULT_PLUGIN_CONFIG,
-    healthRiskProfileSource: "default" as HealthRiskProfileSource,
-  };
+function normalizeDepartmentInput(value: unknown): DepartmentConfigInput | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  return value as DepartmentConfigInput;
+}
+
+function resolveDepartments(value: unknown, warnings: string[]): ResolvedDepartmentConfigMap {
+  const resolved = cloneDepartmentMap(DEPARTMENTS);
+
+  if (value === undefined) {
     return resolved;
   }
 
-  for (const [key, value] of Object.entries(parsed) as Array<[TangConfigField, unknown]>) {
-    if (!(key in TANG_DEFAULT_PLUGIN_CONFIG)) {
-      continue;
-    }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments".`);
+    return resolved;
+  }
 
-    if (!validateConfigField(key, value)) {
-      continue;
-    }
-
-    switch (key) {
-      case "maxConcurrentMinistries":
-        resolved.maxConcurrentMinistries = value as TangEditableConfig["maxConcurrentMinistries"];
-        break;
-      case "maxReviewRounds":
-        resolved.maxReviewRounds = value as TangEditableConfig["maxReviewRounds"];
-        break;
-      case "tokenBudgetLimit":
-        resolved.tokenBudgetLimit = value as TangEditableConfig["tokenBudgetLimit"];
-        break;
-      case "enableParallelExecution":
-        resolved.enableParallelExecution = value as TangEditableConfig["enableParallelExecution"];
-        break;
-      case "verbose":
-        resolved.verbose = value as TangEditableConfig["verbose"];
-        break;
-      case "healthRiskProfile":
-        resolved.healthRiskProfile = value as TangEditableConfig["healthRiskProfile"];
-        resolved.healthRiskProfileSource = "config";
-        break;
-      case "agentModels":
-        resolved.agentModels = resolveAgentModels(value);
-        break;
+  for (const key of Object.keys(value)) {
+    if (!DEPARTMENT_IDS.includes(key as (typeof DEPARTMENT_IDS)[number])) {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments.${key}".`);
     }
   }
 
+  for (const departmentId of DEPARTMENT_IDS) {
+    if (!hasOwn(value as Record<string, unknown>, departmentId)) {
+      continue;
+    }
+
+    const rawDepartment = normalizeDepartmentInput((value as Record<string, unknown>)[departmentId]);
+    if (!rawDepartment) {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments.${departmentId}".`);
+      continue;
+    }
+
+    const nextDepartment = { ...resolved[departmentId] };
+
+    if (hasOwn(rawDepartment as Record<string, unknown>, "name")) {
+      if (isNonEmptyString(rawDepartment.name)) {
+        nextDepartment.name = rawDepartment.name.trim();
+      } else {
+        warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments.${departmentId}.name".`);
+      }
+    }
+
+    if (hasOwn(rawDepartment as Record<string, unknown>, "chineseName")) {
+      if (isNonEmptyString(rawDepartment.chineseName)) {
+        nextDepartment.chineseName = rawDepartment.chineseName.trim();
+      } else {
+        warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments.${departmentId}.chineseName".`);
+      }
+    }
+
+    if (hasOwn(rawDepartment as Record<string, unknown>, "systemPrompt")) {
+      if (isNonEmptyString(rawDepartment.systemPrompt)) {
+        nextDepartment.systemPrompt = rawDepartment.systemPrompt.trim();
+      } else {
+        warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "departments.${departmentId}.systemPrompt".`);
+      }
+    }
+
+    resolved[departmentId] = nextDepartment;
+  }
+
   return resolved;
+}
+
+function isMinistryTools(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => isNonEmptyString(item));
+}
+
+function resolveMinistries(value: unknown, warnings: string[]): ResolvedMinistryConfigMap {
+  if (value === undefined) {
+    return cloneMinistryMap(MINISTRIES);
+  }
+
+  if (!Array.isArray(value)) {
+    warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "ministries".`);
+    return cloneMinistryMap(MINISTRIES);
+  }
+
+  const resolved: ResolvedMinistryConfigMap = {};
+  const seenIds = new Set<string>();
+
+  value.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" ministry entry at index ${index}.`);
+      return;
+    }
+
+    const { id, name, chineseName, systemPrompt, tools } = entry as {
+      id?: unknown;
+      name?: unknown;
+      chineseName?: unknown;
+      systemPrompt?: unknown;
+      tools?: unknown;
+    };
+
+    if (!isNonEmptyString(id) || !isNonEmptyString(name) || !isNonEmptyString(chineseName)
+      || !isNonEmptyString(systemPrompt) || !isMinistryTools(tools)) {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" ministry entry at index ${index}.`);
+      return;
+    }
+
+    const normalizedId = id.trim();
+    if (seenIds.has(normalizedId)) {
+      warnings.push(`Ignoring duplicate "${TANG_CONFIG_FILE_NAME}" ministry id "${normalizedId}".`);
+      return;
+    }
+
+    seenIds.add(normalizedId);
+    resolved[normalizedId] = {
+      id: normalizedId,
+      name: name.trim(),
+      chineseName: chineseName.trim(),
+      department: "shangshu",
+      systemPrompt: systemPrompt.trim(),
+      tools: tools.map((tool) => tool.trim()),
+    };
+  });
+
+  if (Object.keys(resolved).length === 0) {
+    warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "ministries".`);
+    return cloneMinistryMap(MINISTRIES);
+  }
+
+  return resolved;
+}
+
+function resolveAgentModels(
+  value: unknown,
+  allowedAgentIds: Set<string>,
+  warnings: string[],
+): TangAgentModelConfigMap {
+  const resolved: TangAgentModelConfigMap = {};
+
+  if (value === undefined) {
+    return resolved;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "agentModels".`);
+    return resolved;
+  }
+
+  for (const [agentId, config] of Object.entries(value)) {
+    if (!allowedAgentIds.has(agentId) || !isTangModelConfig(config)) {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "agentModels.${agentId}".`);
+      continue;
+    }
+
+    resolved[agentId] = {
+      providerID: config.providerID.trim(),
+      modelID: config.modelID.trim(),
+    };
+  }
+
+  return resolved;
+}
+
+function resolveConfigObject(parsed: unknown, warnings: string[]): TangResolvedCoreConfig & {
+  healthRiskProfileSource: HealthRiskProfileSource;
+} {
+  const resolved = createDefaultPluginConfig();
+  let healthRiskProfileSource: HealthRiskProfileSource = "default";
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ...resolved,
+      healthRiskProfileSource,
+    };
+  }
+
+  const config = parsed as Record<string, unknown>;
+
+  if (hasOwn(config, "maxConcurrentMinistries")) {
+    if (Number.isInteger(config.maxConcurrentMinistries) && Number(config.maxConcurrentMinistries) > 0) {
+      resolved.maxConcurrentMinistries = Number(config.maxConcurrentMinistries);
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "maxConcurrentMinistries".`);
+    }
+  }
+
+  if (hasOwn(config, "maxReviewRounds")) {
+    if (Number.isInteger(config.maxReviewRounds) && Number(config.maxReviewRounds) > 0) {
+      resolved.maxReviewRounds = Number(config.maxReviewRounds);
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "maxReviewRounds".`);
+    }
+  }
+
+  if (hasOwn(config, "tokenBudgetLimit")) {
+    if (Number.isInteger(config.tokenBudgetLimit) && Number(config.tokenBudgetLimit) > 0) {
+      resolved.tokenBudgetLimit = Number(config.tokenBudgetLimit);
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "tokenBudgetLimit".`);
+    }
+  }
+
+  if (hasOwn(config, "enableParallelExecution")) {
+    if (typeof config.enableParallelExecution === "boolean") {
+      resolved.enableParallelExecution = config.enableParallelExecution;
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "enableParallelExecution".`);
+    }
+  }
+
+  if (hasOwn(config, "verbose")) {
+    if (typeof config.verbose === "boolean") {
+      resolved.verbose = config.verbose;
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "verbose".`);
+    }
+  }
+
+  if (hasOwn(config, "healthRiskProfile")) {
+    if (isHealthRiskProfile(config.healthRiskProfile)) {
+      resolved.healthRiskProfile = config.healthRiskProfile;
+      healthRiskProfileSource = "config";
+    } else {
+      warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "healthRiskProfile".`);
+    }
+  }
+
+  resolved.departments = resolveDepartments(config.departments, warnings);
+  resolved.ministries = resolveMinistries(config.ministries, warnings);
+  resolved.agentModels = resolveAgentModels(
+    config.agentModels,
+    new Set([...DEPARTMENT_IDS, ...Object.keys(resolved.ministries)]),
+    warnings,
+  );
+
+  return {
+    ...resolved,
+    healthRiskProfileSource,
+  };
 }
 
 export function resolveTangConfig(worktree: string): ResolvedTangConfig {
@@ -228,10 +417,10 @@ export function resolveTangConfig(worktree: string): ResolvedTangConfig {
   if (!existsSync(tangConfigPath)) {
     try {
       mkdirSync(configDirectory, { recursive: true });
-      writeFileSync(tangConfigPath, JSON.stringify(TANG_DEFAULT_PLUGIN_CONFIG, null, 2));
+      writeFileSync(tangConfigPath, JSON.stringify(createDefaultFileConfig(), null, 2));
       return {
         config: {
-          ...TANG_DEFAULT_PLUGIN_CONFIG,
+          ...createDefaultPluginConfig(),
           healthRiskProfileSource: "default",
         },
         configFile: createConfigMetadata(tangConfigPath, "auto-generated", true, foundOpencodeConfig),
@@ -241,7 +430,7 @@ export function resolveTangConfig(worktree: string): ResolvedTangConfig {
       warnings.push(`Failed to write ${TANG_CONFIG_FILE_NAME}: ${error instanceof Error ? error.message : String(error)}`);
       return {
         config: {
-          ...TANG_DEFAULT_PLUGIN_CONFIG,
+          ...createDefaultPluginConfig(),
           healthRiskProfileSource: "default",
         },
         configFile: createConfigMetadata(tangConfigPath, "write-failed-fallback", false, foundOpencodeConfig),
@@ -257,7 +446,7 @@ export function resolveTangConfig(worktree: string): ResolvedTangConfig {
     warnings.push(`Failed to parse ${TANG_CONFIG_FILE_NAME}; using built-in defaults. ${error instanceof Error ? error.message : String(error)}`);
     return {
       config: {
-        ...TANG_DEFAULT_PLUGIN_CONFIG,
+        ...createDefaultPluginConfig(),
         healthRiskProfileSource: "default",
       },
       configFile: createConfigMetadata(tangConfigPath, "invalid-file-fallback", false, foundOpencodeConfig),
@@ -265,34 +454,8 @@ export function resolveTangConfig(worktree: string): ResolvedTangConfig {
     };
   }
 
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    for (const [key, value] of Object.entries(parsed) as Array<[TangConfigField, unknown]>) {
-      if (!(key in TANG_DEFAULT_PLUGIN_CONFIG)) {
-        continue;
-      }
-
-      if (key === "agentModels") {
-        if (!validateConfigField(key, value)) {
-          warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "${key}".`);
-          continue;
-        }
-
-        for (const [agentId, modelConfig] of Object.entries(value)) {
-          if (!isTangRuntimeAgentId(agentId) || !isTangModelConfig(modelConfig)) {
-            warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "agentModels.${agentId}".`);
-          }
-        }
-        continue;
-      }
-
-      if (!validateConfigField(key, value)) {
-        warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "${key}".`);
-      }
-    }
-  }
-
   return {
-    config: validateConfigObject(parsed),
+    config: resolveConfigObject(parsed, warnings),
     configFile: createConfigMetadata(tangConfigPath, "file", false, foundOpencodeConfig),
     warnings,
   };

@@ -1,7 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DEPARTMENTS } from "./agents/departments.js";
-import { MINISTRIES } from "./agents/ministries.js";
 import { TANG_DEFAULT_PLUGIN_CONFIG } from "./config.js";
 import type { TangExecutionRuntime } from "./runtime.js";
 import type {
@@ -87,7 +85,7 @@ const PIPELINE_STAGES: readonly {
   { phase: "drafting", label: "Drafting", chineseLabel: "中书省起草" },
   { phase: "reviewing", label: "Reviewing", chineseLabel: "门下省复核" },
   { phase: "dispatching", label: "Dispatching", chineseLabel: "尚书省派发" },
-  { phase: "executing", label: "Executing", chineseLabel: "六部执行" },
+  { phase: "executing", label: "Executing", chineseLabel: "诸部执行" },
   { phase: "completing", label: "Completing", chineseLabel: "结案归档" },
 ] as const;
 
@@ -103,7 +101,7 @@ const CONFIG_RUNTIME_MEANING = "Shows whether Tang is using only local heuristic
 const CONFIG_LIMITS_MEANING = "Shows the concurrency, review, and budget limits that shape Tang orchestration behavior.";
 const CONFIG_HEALTH_MEANING = "Shows which named health risk profile shapes doctor scores and risk levels.";
 const CONFIG_EXECUTION_MEANING = "Shows execution-mode flags that affect how work runs and how much detail Tang emits.";
-const CONFIG_MODELS_MEANING = "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.";
+const CONFIG_MODELS_MEANING = "Shows per-role OpenCode model overrides for Tang runtime agents, including any configured ministries; roles not listed use the host default model.";
 const CONFIG_REDACTION_PLACEHOLDER = "[REDACTED]";
 const CONFIG_SENSITIVE_KEYWORDS = ["password", "secret", "token", "key", "credential", "auth", "bearer", "private"];
 const CONFIG_NON_SENSITIVE_KEYS = new Set(["authMode", "tokenBudgetLimit"]);
@@ -211,15 +209,26 @@ export class TangDynastyOrchestrator {
   }
 
   private createBudget(): TokenBudget {
-    const perMinistry: Record<MinistryId, number> = {
-      personnel: 0,
-      revenue: 0,
-      rites: 0,
-      military: 0,
-      justice: 0,
-      works: 0,
-    };
+    const perMinistry = Object.fromEntries(
+      Object.keys(this.config.ministries).map((ministry) => [ministry, 0]),
+    );
     return { total: this.config.tokenBudgetLimit, used: 0, perMinistry };
+  }
+
+  private normalizeBudget(tokenBudget: TokenBudget): TokenBudget {
+    const perMinistry = {
+      ...(tokenBudget.perMinistry ?? {}),
+    };
+
+    for (const ministry of Object.keys(this.config.ministries)) {
+      perMinistry[ministry] ??= 0;
+    }
+
+    return {
+      total: tokenBudget.total,
+      used: tokenBudget.used,
+      perMinistry,
+    };
   }
 
   private estimateTaskCost(description: string): number {
@@ -233,8 +242,33 @@ export class TangDynastyOrchestrator {
     const charged = Math.min(requested, remaining);
 
     this.state.tokenBudget.used += charged;
-    this.state.tokenBudget.perMinistry[ministry] += charged;
+    this.state.tokenBudget.perMinistry[ministry] = (this.state.tokenBudget.perMinistry[ministry] ?? 0) + charged;
     this.persistState();
+  }
+
+  private getConfiguredMinistryIds(): MinistryId[] {
+    return Object.keys(this.config.ministries);
+  }
+
+  private selectFirstConfiguredMinistry(preferred: MinistryId[]): MinistryId | undefined {
+    return preferred.find((ministryId) => this.config.ministries[ministryId]) ?? this.getConfiguredMinistryIds()[0];
+  }
+
+  private findMinistryByKeyword(loweredRequest: string): MinistryId[] {
+    return this.getConfiguredMinistryIds().filter((ministryId) => {
+      const ministry = this.config.ministries[ministryId];
+      if (!ministry) {
+        return false;
+      }
+
+      return [
+        ministry.id,
+        ministry.name,
+        ministry.chineseName,
+        ministry.systemPrompt,
+        ...ministry.tools,
+      ].some((value) => loweredRequest.includes(value.toLowerCase()));
+    });
   }
 
   private appendUniqueTask(
@@ -294,7 +328,7 @@ export class TangDynastyOrchestrator {
       return {
         edicts: new Map(parsed.edicts.map((edict) => [edict.id, edict])),
         activeTasks: new Map(parsed.activeTasks.map((task) => [task.id, task])),
-        tokenBudget: parsed.tokenBudget,
+        tokenBudget: this.normalizeBudget(parsed.tokenBudget),
         phase: parsed.phase,
       };
     } catch (error) {
@@ -615,7 +649,7 @@ export class TangDynastyOrchestrator {
       );
     }
 
-    const dept = DEPARTMENTS.zhongshu;
+    const dept = this.config.departments.zhongshu;
     const prompt = `${dept.systemPrompt}\n\nUser Request:\n${userRequest}${reviewFeedback ? `\n\nReview Feedback to Address:\n${reviewFeedback}` : ""}\n\nProduce a structured execution plan.`;
 
     return this.emit(
@@ -834,50 +868,75 @@ export class TangDynastyOrchestrator {
     return this.parseReviewPayload(reviewContent).verdict;
   }
 
+  private hasMinistry(ministry: MinistryId): boolean {
+    return Boolean(this.config.ministries[ministry]);
+  }
+
+  private getFallbackMinistryId(): MinistryId {
+    const fallback = Object.keys(this.config.ministries)[0];
+    return fallback ?? "works";
+  }
+
+  private appendIfConfigured(
+    tasks: Array<{ ministry: MinistryId; description: string }>,
+    ministry: MinistryId,
+    description: string,
+  ) {
+    if (this.hasMinistry(ministry)) {
+      this.appendUniqueTask(tasks, { ministry, description });
+    }
+  }
+
   private inferTasks(request: string): Array<{ ministry: MinistryId; description: string }> {
     const tasks: Array<{ ministry: MinistryId; description: string }> = [];
     const lower = request.toLowerCase();
 
+    for (const ministry of Object.values(this.config.ministries)) {
+      const needles = [
+        ministry.id.toLowerCase(),
+        ministry.name.toLowerCase(),
+        ministry.chineseName.toLowerCase(),
+      ];
+
+      if (includesAny(lower, needles)) {
+        this.appendUniqueTask(tasks, {
+          ministry: ministry.id,
+          description: request.trim() || `Route work to ${ministry.name}`,
+        });
+      }
+    }
+
     if (includesAny(lower, ["delegate", "assign", "parallel", "orchestrate", "coordinate", "agent", "agents"])) {
-      this.appendUniqueTask(tasks, {
-        ministry: "personnel",
-        description: "Assign ministries and execution strategy",
-      });
+      this.appendIfConfigured(tasks, "personnel", "Assign ministries and execution strategy");
     }
 
     if (includesAny(lower, ["budget", "cost", "token", "resource", "resources"])) {
-      this.appendUniqueTask(tasks, {
-        ministry: "revenue",
-        description: "Estimate and allocate orchestration budget",
-      });
+      this.appendIfConfigured(tasks, "revenue", "Estimate and allocate orchestration budget");
     }
 
     if (lower.includes("build") || lower.includes("scaffold") || lower.includes("create project")) {
-      this.appendUniqueTask(tasks, { ministry: "works", description: "Set up project infrastructure" });
+      this.appendIfConfigured(tasks, "works", "Set up project infrastructure");
     }
     if (lower.includes("code") || lower.includes("implement") || lower.includes("write")) {
-      this.appendUniqueTask(tasks, { ministry: "military", description: "Execute code implementation" });
+      this.appendIfConfigured(tasks, "military", "Execute code implementation");
     }
     if (lower.includes("test") || lower.includes("validate") || lower.includes("check")) {
-      this.appendUniqueTask(tasks, { ministry: "justice", description: "Run validation and tests" });
+      this.appendIfConfigured(tasks, "justice", "Run validation and tests");
     }
     if (lower.includes("format") || lower.includes("lint") || lower.includes("style")) {
-      this.appendUniqueTask(tasks, { ministry: "rites", description: "Enforce style and formatting" });
+      this.appendIfConfigured(tasks, "rites", "Enforce style and formatting");
     }
 
     if (tasks.length === 0) {
-      this.appendUniqueTask(tasks, { ministry: "military", description: request.trim() || "Execute requested work" });
+      this.appendUniqueTask(tasks, {
+        ministry: this.hasMinistry("military") ? "military" : this.getFallbackMinistryId(),
+        description: request.trim() || "Execute requested work",
+      });
     }
 
     if (tasks.length > 1) {
-      this.appendUniqueTask(tasks, {
-        ministry: "personnel",
-        description: "Coordinate ministry assignment and sequencing",
-      });
-      this.appendUniqueTask(tasks, {
-        ministry: "revenue",
-        description: "Track estimated budget across dispatched ministries",
-      });
+      this.appendIfConfigured(tasks, "personnel", "Coordinate ministry assignment and sequencing");
+      this.appendIfConfigured(tasks, "revenue", "Track estimated budget across dispatched ministries");
     }
 
     return tasks;
@@ -1211,8 +1270,10 @@ export class TangDynastyOrchestrator {
       break;
     }
 
-    const ministry = MINISTRIES[task.ministry];
-    task.result = `[${ministry.chineseName} ${ministry.name}] Completed: ${task.description}`;
+    const ministry = this.config.ministries[task.ministry];
+    task.result = ministry
+      ? `[${ministry.chineseName} ${ministry.name}] Completed: ${task.description}`
+      : `Completed: ${task.description}`;
     task.status = "completed";
     task.error = undefined;
     task.audit ??= { executionSource: "local" };

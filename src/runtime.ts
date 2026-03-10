@@ -4,6 +4,8 @@ import type {
   Edict,
   MinistryId,
   MinistryTask,
+  ResolvedDepartmentConfigMap,
+  ResolvedMinistryConfigMap,
   TangAgentModelConfigMap,
   TangModelConfig,
   TangRuntimeAgentId,
@@ -95,17 +97,8 @@ type TangRuntimeError = Error & {
   raw?: string;
 };
 
-const MINISTRY_IDS = new Set<MinistryId>([
-  "personnel",
-  "revenue",
-  "rites",
-  "military",
-  "justice",
-  "works",
-]);
-
-function isMinistryId(value: unknown): value is MinistryId {
-  return typeof value === "string" && MINISTRY_IDS.has(value as MinistryId);
+function isMinistryId(value: unknown, ministryIds: Set<string>): value is MinistryId {
+  return typeof value === "string" && ministryIds.has(value);
 }
 
 function hasRuntimeSessionClient(client: TangRuntimeClient | undefined): client is { session: TangRuntimeSessionClient } {
@@ -175,7 +168,10 @@ function extractStructuredJson(raw: string): unknown {
   }
 }
 
-function isDraftPlanResult(value: unknown): value is DraftPlanResult {
+function isDraftPlanResult(
+  value: unknown,
+  ministryIds: Set<string>,
+): value is DraftPlanResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
@@ -186,14 +182,17 @@ function isDraftPlanResult(value: unknown): value is DraftPlanResult {
     && candidate.tasks.every((task) => (
       task
       && typeof task === "object"
-      && isMinistryId(task.ministry)
+      && isMinistryId(task.ministry, ministryIds)
       && isNonEmptyString(task.description)
     ))
     && (candidate.title === undefined || typeof candidate.title === "string")
     && (candidate.description === undefined || typeof candidate.description === "string");
 }
 
-function isDispatchTasksResult(value: unknown): value is DispatchTasksResult {
+function isDispatchTasksResult(
+  value: unknown,
+  ministryIds: Set<string>,
+): value is DispatchTasksResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
@@ -204,7 +203,7 @@ function isDispatchTasksResult(value: unknown): value is DispatchTasksResult {
     && candidate.tasks.every((task) => (
       task
       && typeof task === "object"
-      && isMinistryId(task.ministry)
+      && isMinistryId(task.ministry, ministryIds)
       && isNonEmptyString(task.description)
     ));
 }
@@ -305,11 +304,11 @@ async function runRuntimePrompt(
   };
 }
 
-function buildDraftPlanPrompt(userRequest: string, reviewFeedback?: string): string {
+function buildDraftPlanPrompt(userRequest: string, ministryIds: string[], reviewFeedback?: string): string {
   return [
     `User request: ${userRequest}`,
     reviewFeedback ? `Review feedback to address: ${reviewFeedback}` : undefined,
-    "Valid ministry ids: personnel, revenue, rites, military, justice, works.",
+    `Valid ministry ids: ${ministryIds.join(", ")}.`,
     'Return JSON only: {"title":"string","description":"string","tasks":[{"ministry":"works","description":"..."}]}.',
     "Choose the smallest set of ministries needed to complete the work.",
   ]
@@ -338,10 +337,11 @@ function buildTaskExecutionPrompt(task: MinistryTask, reviewFeedback?: string): 
     .join("\n\n");
 }
 
-function buildDispatchTasksPrompt(planContent: string): string {
+function buildDispatchTasksPrompt(planContent: string, ministryIds: string[]): string {
   return [
     "Approved plan content:",
     planContent,
+    `Valid ministry ids: ${ministryIds.join(", ")}.`,
     "Dispatch the approved work to the correct ministries.",
     "Keep the task list concrete and execution-ready.",
     'Return JSON only: {"tasks":[{"ministry":"works","description":"..."}]}.',
@@ -362,6 +362,8 @@ function buildTaskReviewPrompt(task: MinistryTask): string {
 export function createOpenCodeTangRuntime(
   client?: TangRuntimeClient,
   _worktree?: string,
+  departments: ResolvedDepartmentConfigMap = DEPARTMENTS,
+  ministries: ResolvedMinistryConfigMap = MINISTRIES,
   agentModels: TangAgentModelConfigMap = {},
 ): TangExecutionRuntime | undefined {
   if (!hasRuntimeSessionClient(client)) {
@@ -370,6 +372,8 @@ export function createOpenCodeTangRuntime(
 
   const runtimeClient = client.session;
   const getModel = (agentId: TangRuntimeAgentId) => agentModels[agentId];
+  const ministryIds = Object.keys(ministries);
+  const validMinistryIds = new Set(ministryIds);
 
   return {
     async draftPlan(edict, userRequest, reviewFeedback) {
@@ -377,13 +381,13 @@ export function createOpenCodeTangRuntime(
         const { raw, sessionID, providerID, modelID } = await runRuntimePrompt(
           runtimeClient,
           `Tang draft: ${edict.title}`,
-          `${DEPARTMENTS.zhongshu.systemPrompt}\nReturn JSON only.`,
-          buildDraftPlanPrompt(userRequest, reviewFeedback),
+          `${departments.zhongshu.systemPrompt}\nReturn JSON only.`,
+          buildDraftPlanPrompt(userRequest, ministryIds, reviewFeedback),
           getModel("zhongshu"),
         );
         const parsed = extractStructuredJson(raw);
 
-        if (!isDraftPlanResult(parsed)) {
+        if (!isDraftPlanResult(parsed, validMinistryIds)) {
           return undefined;
         }
 
@@ -404,7 +408,7 @@ export function createOpenCodeTangRuntime(
         const { raw, sessionID, providerID, modelID } = await runRuntimePrompt(
           runtimeClient,
           `Tang review: ${edict.title}`,
-          `${DEPARTMENTS.menxia.systemPrompt}\nReturn JSON only.`,
+          `${departments.menxia.systemPrompt}\nReturn JSON only.`,
           buildReviewPlanPrompt(planContent, remainingBudget),
           getModel("menxia"),
         );
@@ -430,8 +434,8 @@ export function createOpenCodeTangRuntime(
       const { raw, sessionID, providerID, modelID } = await runRuntimePrompt(
         runtimeClient,
         `Tang dispatch: ${edict.title}`,
-        `${DEPARTMENTS.shangshu.systemPrompt}\nReturn JSON only.`,
-        buildDispatchTasksPrompt(planContent),
+        `${departments.shangshu.systemPrompt}\nReturn JSON only.`,
+        buildDispatchTasksPrompt(planContent, ministryIds),
         getModel("shangshu"),
       );
 
@@ -445,7 +449,7 @@ export function createOpenCodeTangRuntime(
         );
       }
 
-      if (!isDispatchTasksResult(parsed)) {
+      if (!isDispatchTasksResult(parsed, validMinistryIds)) {
         throw createTangRuntimeError(
           "Invalid dispatch payload from OpenCode runtime: expected a non-empty tasks array.",
           { sessionID, providerID, modelID, raw },
@@ -465,7 +469,7 @@ export function createOpenCodeTangRuntime(
       const { raw, sessionID, providerID, modelID } = await runRuntimePrompt(
         runtimeClient,
         `Tang execute: ${edict.title} / ${task.ministry}`,
-        `${MINISTRIES[task.ministry].systemPrompt}\nReturn JSON only.`,
+        `${ministries[task.ministry]?.systemPrompt ?? `Execute the ${task.ministry} task.`}\nReturn JSON only.`,
         buildTaskExecutionPrompt(task, reviewFeedback),
         getModel(task.ministry),
       );
@@ -488,7 +492,7 @@ export function createOpenCodeTangRuntime(
       const { raw, sessionID, providerID, modelID } = await runRuntimePrompt(
         runtimeClient,
         `Tang execution review: ${edict.title} / ${task.ministry}`,
-        `${DEPARTMENTS.menxia.systemPrompt}\nReturn JSON only.`,
+        `${departments.menxia.systemPrompt}\nReturn JSON only.`,
         buildTaskReviewPrompt(task),
         getModel("menxia"),
       );

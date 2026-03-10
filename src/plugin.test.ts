@@ -31,6 +31,14 @@ function writeOpencodeConfig(worktree: string, relativeDirectory = "config") {
   return opencodeConfigPath;
 }
 
+function writeTangConfig(worktree: string, config: unknown, relativeDirectory = ".") {
+  const directory = join(worktree, relativeDirectory);
+  mkdirSync(directory, { recursive: true });
+  const tangConfigPath = join(directory, ".oh-my-tang.json");
+  writeFileSync(tangConfigPath, JSON.stringify(config, null, 2));
+  return tangConfigPath;
+}
+
 function createPluginInput(worktree: string, client = createOpencodeClient({
   baseUrl: "http://127.0.0.1:1",
   directory: worktree,
@@ -520,7 +528,7 @@ describe("TangDynastyPlugin", () => {
       { phase: "drafting", label: "Drafting", chineseLabel: "中书省起草", status: "completed" },
       { phase: "reviewing", label: "Reviewing", chineseLabel: "门下省复核", status: "completed" },
       { phase: "dispatching", label: "Dispatching", chineseLabel: "尚书省派发", status: "completed" },
-      { phase: "executing", label: "Executing", chineseLabel: "六部执行", status: "active" },
+      { phase: "executing", label: "Executing", chineseLabel: "诸部执行", status: "active" },
       { phase: "completing", label: "Completing", chineseLabel: "结案归档", status: "pending" },
     ]);
 
@@ -1039,6 +1047,7 @@ describe("TangDynastyPlugin", () => {
     expect(storageCheck?.detail).toContain("corrupt");
   });
 
+
   test("tang_config returns a discoverable config inspection snapshot", async () => {
     const worktree = createWorktree();
     writeOpencodeConfig(worktree, ".");
@@ -1088,7 +1097,7 @@ describe("TangDynastyPlugin", () => {
       },
       models: {
         agentModels: {},
-        meaning: "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.",
+        meaning: "Shows per-role OpenCode model overrides for Tang runtime agents, including any configured ministries; roles not listed use the host default model.",
       },
     });
   });
@@ -1110,7 +1119,318 @@ describe("TangDynastyPlugin", () => {
       enableParallelExecution: true,
       verbose: false,
       agentModels: {},
+      departments: {
+        zhongshu: {
+          name: "Zhongshu",
+          chineseName: "中书省",
+          systemPrompt: "Draft a structured Tang edict plan with clear ministry tasks.",
+        },
+        menxia: {
+          name: "Menxia",
+          chineseName: "门下省",
+          systemPrompt: "Review Tang plans and execution results for approval, rejection, and amendments.",
+        },
+        shangshu: {
+          name: "Shangshu",
+          chineseName: "尚书省",
+          systemPrompt: "Dispatch approved Tang work to the correct ministries and summarize final outcomes.",
+        },
+      },
+      ministries: [
+        {
+          id: "personnel",
+          name: "Personnel",
+          chineseName: "吏部",
+          systemPrompt: "Coordinate ministry assignment and sequencing.",
+          tools: ["planning", "delegation"],
+        },
+        {
+          id: "revenue",
+          name: "Revenue",
+          chineseName: "户部",
+          systemPrompt: "Track token budgets and resource estimates.",
+          tools: ["budgeting", "estimation"],
+        },
+        {
+          id: "rites",
+          name: "Rites",
+          chineseName: "礼部",
+          systemPrompt: "Handle formatting, protocol, and style checks.",
+          tools: ["formatting", "linting"],
+        },
+        {
+          id: "military",
+          name: "Military",
+          chineseName: "兵部",
+          systemPrompt: "Execute implementation-focused work.",
+          tools: ["execution", "orchestration"],
+        },
+        {
+          id: "justice",
+          name: "Justice",
+          chineseName: "刑部",
+          systemPrompt: "Validate outputs, run checks, and enforce quality gates.",
+          tools: ["validation", "testing"],
+        },
+        {
+          id: "works",
+          name: "Works",
+          chineseName: "工部",
+          systemPrompt: "Perform code, build, and file-generation work.",
+          tools: ["coding", "builds"],
+        },
+      ],
     });
+  });
+
+  test("uses configured prompts and a configurable ministry list from .oh-my-tang.json", async () => {
+    const worktree = createWorktree();
+    const opencodeConfigPath = writeOpencodeConfig(worktree, ".opencode");
+
+    writeFileSync(
+      join(dirname(opencodeConfigPath), ".oh-my-tang.json"),
+      JSON.stringify({
+        departments: {
+          zhongshu: {
+            systemPrompt: "Custom Zhongshu prompt.",
+          },
+          menxia: {
+            systemPrompt: "Custom Menxia prompt.",
+          },
+          shangshu: {
+            systemPrompt: "Custom Shangshu prompt.",
+          },
+        },
+        ministries: [
+          {
+            id: "archives",
+            name: "Archives",
+            chineseName: "档案部",
+            systemPrompt: "Archive every accepted task.",
+            tools: ["archiving", "records"],
+          },
+        ],
+      }, null, 2),
+    );
+
+    const mockClient = createMockRuntimeClient([
+      JSON.stringify({
+        title: "Archive the migration plan",
+        description: "Archive the migration plan",
+        tasks: [{ ministry: "archives", description: "Archive the migration plan" }],
+      }),
+      JSON.stringify({
+        verdict: "approve",
+        reasons: ["Looks good"],
+        amendments: [],
+      }),
+      JSON.stringify({
+        tasks: [{ ministry: "archives", description: "Archive the migration plan" }],
+      }),
+      JSON.stringify({
+        status: "completed",
+        result: "Archived the migration plan",
+      }),
+      JSON.stringify({
+        verdict: "approve",
+        reasons: ["Execution looks good"],
+        amendments: [],
+      }),
+    ]);
+
+    const plugin = await TangDynastyPlugin(createPluginInput(worktree, mockClient.client as PluginInput["client"]));
+    const context = createToolContext(worktree);
+    const agents = JSON.parse(await plugin.tool?.tang_agents.execute({}, context) ?? "{}");
+    const output = await plugin.tool?.tang_process.execute(
+      { request: "Archive the migration plan" },
+      context,
+    );
+    const audit = JSON.parse(await plugin.tool?.tang_audit.execute(
+      { latest: true },
+      context,
+    ) ?? "[]");
+    const edict = JSON.parse(output ?? "{}");
+
+    expect(agents.departments).toEqual([
+      {
+        id: "zhongshu",
+        name: "Zhongshu",
+        chineseName: "中书省",
+        systemPrompt: "Custom Zhongshu prompt.",
+      },
+      {
+        id: "menxia",
+        name: "Menxia",
+        chineseName: "门下省",
+        systemPrompt: "Custom Menxia prompt.",
+      },
+      {
+        id: "shangshu",
+        name: "Shangshu",
+        chineseName: "尚书省",
+        systemPrompt: "Custom Shangshu prompt.",
+      },
+    ]);
+    expect(agents.ministries).toEqual([
+      {
+        id: "archives",
+        name: "Archives",
+        chineseName: "档案部",
+        systemPrompt: "Archive every accepted task.",
+        tools: ["archiving", "records"],
+      },
+    ]);
+    expect(edict.status).toBe("completed");
+    expect(mockClient.promptCalls.map(call => call.body?.system)).toEqual([
+      "Custom Zhongshu prompt.\nReturn JSON only.",
+      "Custom Menxia prompt.\nReturn JSON only.",
+      "Custom Shangshu prompt.\nReturn JSON only.",
+      "Archive every accepted task.\nReturn JSON only.",
+      "Custom Menxia prompt.\nReturn JSON only.",
+    ]);
+    expect(mockClient.promptCalls[0]?.body?.parts?.[0]?.text).toContain("Valid ministry ids: archives.");
+    expect(audit).toMatchObject([
+      {
+        edictId: expect.any(String),
+        title: "Archive the migration plan",
+        status: "completed",
+        totalTasks: 1,
+        clientExecutions: 1,
+        localExecutions: 0,
+        fallbackExecutions: 0,
+        ministries: [
+          {
+            ministry: "archives",
+            status: "completed",
+            executionSource: "client",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("supports model overrides for a custom configured ministry", async () => {
+    const worktree = createWorktree();
+    const opencodeConfigPath = writeOpencodeConfig(worktree, ".");
+    writeFileSync(join(dirname(opencodeConfigPath), ".oh-my-tang.json"), JSON.stringify({
+      departments: {
+        zhongshu: { systemPrompt: "CUSTOM DRAFT PROMPT" },
+        menxia: { systemPrompt: "CUSTOM REVIEW PROMPT" },
+        shangshu: { systemPrompt: "CUSTOM DISPATCH PROMPT" },
+      },
+      ministries: [
+        {
+          id: "archives",
+          name: "Archives",
+          chineseName: "档案部",
+          systemPrompt: "CUSTOM ARCHIVES PROMPT",
+          tools: ["documentation"],
+        },
+      ],
+      agentModels: {
+        archives: {
+          providerID: "openai",
+          modelID: "gpt-5-mini",
+        },
+      },
+    }, null, 2));
+
+    const mockClient = createMockRuntimeClient([
+      JSON.stringify({
+        title: "Prepare release notes",
+        description: "Prepare release notes",
+        tasks: [{ ministry: "archives", description: "Prepare release notes" }],
+      }),
+      JSON.stringify({
+        verdict: "approve",
+        reasons: ["Looks good"],
+        amendments: [],
+      }),
+      JSON.stringify({
+        tasks: [{ ministry: "archives", description: "Prepare release notes" }],
+      }),
+      JSON.stringify({
+        status: "completed",
+        result: "Prepared release notes",
+      }),
+      JSON.stringify({
+        verdict: "approve",
+        reasons: ["Execution looks good"],
+        amendments: [],
+      }),
+    ]);
+
+    const plugin = await TangDynastyPlugin(createPluginInput(worktree, mockClient.client as PluginInput["client"]));
+    const output = await plugin.tool?.tang_process.execute(
+      { request: "Prepare release notes" },
+      createToolContext(worktree),
+    );
+    const edict = JSON.parse(output ?? "{}");
+
+    expect(edict.status).toBe("completed");
+    expect(mockClient.promptCalls.map((call) => call.body?.system)).toEqual([
+      "CUSTOM DRAFT PROMPT\nReturn JSON only.",
+      "CUSTOM REVIEW PROMPT\nReturn JSON only.",
+      "CUSTOM DISPATCH PROMPT\nReturn JSON only.",
+      "CUSTOM ARCHIVES PROMPT\nReturn JSON only.",
+      "CUSTOM REVIEW PROMPT\nReturn JSON only.",
+    ]);
+    expect(mockClient.promptCalls[3]?.body?.model).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5-mini",
+    });
+  });
+
+  test("falls back to the remaining configured ministries when the default six ministries are reduced", async () => {
+    const worktree = createWorktree();
+    const opencodeConfigPath = writeOpencodeConfig(worktree, ".");
+    writeFileSync(join(dirname(opencodeConfigPath), ".oh-my-tang.json"), JSON.stringify({
+      ministries: [
+        {
+          id: "works",
+          name: "Works",
+          chineseName: "工部",
+          systemPrompt: "Perform code, build, and file-generation work.",
+          tools: ["coding", "builds"],
+        },
+      ],
+    }, null, 2));
+
+    const plugin = await TangDynastyPlugin(createPluginInput(worktree));
+    const context = createToolContext(worktree);
+    const output = await plugin.tool?.tang_process.execute(
+      { request: "Implement code and test the plugin" },
+      context,
+    );
+    const audit = JSON.parse(await plugin.tool?.tang_audit.execute({ latest: true }, context) ?? "[]");
+    const edict = JSON.parse(output ?? "{}");
+    const summary = JSON.parse(edict.messages.at(-1)?.content ?? "{}");
+
+    expect(edict.status).toBe("completed");
+    expect(summary).toMatchObject({
+      summary: {
+        totalTasks: 1,
+        completed: 1,
+        failed: 0,
+      },
+      results: [
+        expect.objectContaining({
+          ministry: "works",
+          status: "completed",
+        }),
+      ],
+    });
+    expect(audit).toMatchObject([
+      {
+        totalTasks: 1,
+        ministries: [
+          {
+            ministry: "works",
+            status: "completed",
+          },
+        ],
+      },
+    ]);
   });
 
   test("falls back to the worktree root when opencode.json is absent", async () => {
@@ -1165,7 +1485,7 @@ describe("TangDynastyPlugin", () => {
     });
     expect(report.models).toEqual({
       agentModels: {},
-      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.",
+      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents, including any configured ministries; roles not listed use the host default model.",
     });
     expect(report.health).toMatchObject({
       riskProfile: "relaxed",
@@ -1301,7 +1621,7 @@ describe("TangDynastyPlugin", () => {
           modelID: "gpt-5",
         },
       },
-      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.",
+      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents, including any configured ministries; roles not listed use the host default model.",
     });
   });
 
@@ -1343,7 +1663,7 @@ describe("TangDynastyPlugin", () => {
           modelID: "gpt-5",
         },
       },
-      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.",
+      meaning: "Shows per-role OpenCode model overrides for Tang runtime agents, including any configured ministries; roles not listed use the host default model.",
     });
   });
 
