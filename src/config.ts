@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
+  TangAgentModelConfigMap,
   HealthRiskProfile,
   HealthRiskProfileSource,
   PluginConfig,
+  TangModelConfig,
   TangConfigFileMetadata,
+  TangRuntimeAgentId,
 } from "./types.js";
 
 export const TANG_CONFIG_FILE_NAME = ".oh-my-tang.json";
@@ -15,7 +18,13 @@ const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".tang-dynasty", "d
 
 export const TANG_DEFAULT_PLUGIN_CONFIG: Pick<
   PluginConfig,
-  "maxConcurrentMinistries" | "maxReviewRounds" | "tokenBudgetLimit" | "healthRiskProfile" | "enableParallelExecution" | "verbose"
+  | "maxConcurrentMinistries"
+  | "maxReviewRounds"
+  | "tokenBudgetLimit"
+  | "healthRiskProfile"
+  | "enableParallelExecution"
+  | "verbose"
+  | "agentModels"
 > = {
   maxConcurrentMinistries: 3,
   maxReviewRounds: 3,
@@ -23,6 +32,7 @@ export const TANG_DEFAULT_PLUGIN_CONFIG: Pick<
   healthRiskProfile: "balanced",
   enableParallelExecution: true,
   verbose: false,
+  agentModels: {},
 };
 
 type TangEditableConfig = typeof TANG_DEFAULT_PLUGIN_CONFIG;
@@ -37,6 +47,57 @@ type ResolvedTangConfig = {
 
 function isHealthRiskProfile(value: unknown): value is HealthRiskProfile {
   return value === "balanced" || value === "strict" || value === "relaxed";
+}
+
+const TANG_RUNTIME_AGENT_IDS = new Set<TangRuntimeAgentId>([
+  "zhongshu",
+  "menxia",
+  "shangshu",
+  "personnel",
+  "revenue",
+  "rites",
+  "military",
+  "justice",
+  "works",
+]);
+
+function isTangRuntimeAgentId(value: string): value is TangRuntimeAgentId {
+  return TANG_RUNTIME_AGENT_IDS.has(value as TangRuntimeAgentId);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isTangModelConfig(value: unknown): value is TangModelConfig {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && isNonEmptyString((value as TangModelConfig).providerID)
+    && isNonEmptyString((value as TangModelConfig).modelID),
+  );
+}
+
+function resolveAgentModels(value: unknown): TangAgentModelConfigMap {
+  const resolved: TangAgentModelConfigMap = {};
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return resolved;
+  }
+
+  for (const [agentId, config] of Object.entries(value)) {
+    if (!isTangRuntimeAgentId(agentId) || !isTangModelConfig(config)) {
+      continue;
+    }
+
+    resolved[agentId] = {
+      providerID: config.providerID.trim(),
+      modelID: config.modelID.trim(),
+    };
+  }
+
+  return resolved;
 }
 
 function findOpencodeConfig(worktree: string): string | undefined {
@@ -98,6 +159,8 @@ function validateConfigField(key: TangConfigField, value: unknown): value is Tan
       return typeof value === "boolean";
     case "healthRiskProfile":
       return isHealthRiskProfile(value);
+    case "agentModels":
+      return Boolean(value && typeof value === "object" && !Array.isArray(value));
   }
 }
 
@@ -141,6 +204,9 @@ function validateConfigObject(parsed: unknown): Pick<PluginConfig, keyof TangEdi
       case "healthRiskProfile":
         resolved.healthRiskProfile = value as TangEditableConfig["healthRiskProfile"];
         resolved.healthRiskProfileSource = "config";
+        break;
+      case "agentModels":
+        resolved.agentModels = resolveAgentModels(value);
         break;
     }
   }
@@ -202,6 +268,20 @@ export function resolveTangConfig(worktree: string): ResolvedTangConfig {
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     for (const [key, value] of Object.entries(parsed) as Array<[TangConfigField, unknown]>) {
       if (!(key in TANG_DEFAULT_PLUGIN_CONFIG)) {
+        continue;
+      }
+
+      if (key === "agentModels") {
+        if (!validateConfigField(key, value)) {
+          warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "${key}".`);
+          continue;
+        }
+
+        for (const [agentId, modelConfig] of Object.entries(value)) {
+          if (!isTangRuntimeAgentId(agentId) || !isTangModelConfig(modelConfig)) {
+            warnings.push(`Ignoring invalid "${TANG_CONFIG_FILE_NAME}" value for "agentModels.${agentId}".`);
+          }
+        }
         continue;
       }
 

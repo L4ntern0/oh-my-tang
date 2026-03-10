@@ -103,6 +103,7 @@ const CONFIG_RUNTIME_MEANING = "Shows whether Tang is using only local heuristic
 const CONFIG_LIMITS_MEANING = "Shows the concurrency, review, and budget limits that shape Tang orchestration behavior.";
 const CONFIG_HEALTH_MEANING = "Shows which named health risk profile shapes doctor scores and risk levels.";
 const CONFIG_EXECUTION_MEANING = "Shows execution-mode flags that affect how work runs and how much detail Tang emits.";
+const CONFIG_MODELS_MEANING = "Shows per-role OpenCode model overrides for Tang runtime agents; roles not listed use the host default model.";
 const CONFIG_REDACTION_PLACEHOLDER = "[REDACTED]";
 const CONFIG_SENSITIVE_KEYWORDS = ["password", "secret", "token", "key", "credential", "auth", "bearer", "private"];
 const CONFIG_NON_SENSITIVE_KEYS = new Set(["authMode", "tokenBudgetLimit"]);
@@ -473,6 +474,10 @@ export class TangDynastyOrchestrator {
         verbose: this.config.verbose,
         meaning: CONFIG_EXECUTION_MEANING,
       },
+      models: {
+        agentModels: this.config.agentModels,
+        meaning: CONFIG_MODELS_MEANING,
+      },
     }) as TangConfigReport;
   }
 
@@ -530,8 +535,12 @@ export class TangDynastyOrchestrator {
 
     // Phase 3: 尚书省 — Dispatch to ministries
     this.setPhase("dispatching");
-    const dispatches = await this.dispatchTasks(edict);
-    edict.messages.push(...dispatches.map(d => this.emit("shangshu", `Dispatched to ${d.ministry}: ${d.description}`)));
+    const dispatchResult = await this.dispatchTasks(edict);
+    edict.messages.push(...dispatchResult.tasks.map((dispatch) => this.emit(
+      "shangshu",
+      `Dispatched to ${dispatch.ministry}: ${dispatch.description}`,
+      dispatchResult.metadata,
+    )));
     edict.status = "dispatched";
 
     // Phase 4: 六部 — Execute tasks
@@ -539,19 +548,19 @@ export class TangDynastyOrchestrator {
     edict.status = "executing";
 
     if (this.config.enableParallelExecution) {
-      await this.executeParallel(edict, dispatches);
+      await this.executeParallel(edict, dispatchResult.tasks);
     } else {
-      await this.executeSequential(edict, dispatches);
+      await this.executeSequential(edict, dispatchResult.tasks);
     }
 
     // Check results
-    const allCompleted = dispatches.every(t => t.status === "completed");
+    const allCompleted = dispatchResult.tasks.every(t => t.status === "completed");
     edict.status = allCompleted ? "completed" : "failed";
     edict.updatedAt = Date.now();
 
     this.setPhase("completing");
 
-    const summary = this.buildSummary(edict, dispatches);
+    const summary = this.buildSummary(edict, dispatchResult.tasks);
     edict.messages.push(this.emit("shangshu", summary));
     this.persistState();
 
@@ -599,6 +608,8 @@ export class TangDynastyOrchestrator {
         {
           source: "client",
           sessionID: runtimePlan.sessionID,
+          providerID: runtimePlan.providerID,
+          modelID: runtimePlan.modelID,
           raw: runtimePlan.raw,
         },
       );
@@ -645,6 +656,8 @@ export class TangDynastyOrchestrator {
         {
           source: "client",
           sessionID: runtimeReview.sessionID,
+          providerID: runtimeReview.providerID,
+          modelID: runtimeReview.modelID,
           raw: runtimeReview.raw,
         },
       );
@@ -716,6 +729,8 @@ export class TangDynastyOrchestrator {
           {
             source: "client",
             sessionID: runtimeReview.sessionID,
+            providerID: runtimeReview.providerID,
+            modelID: runtimeReview.modelID,
             raw: runtimeReview.raw,
           },
         );
@@ -868,10 +883,75 @@ export class TangDynastyOrchestrator {
     return tasks;
   }
 
-  private async dispatchTasks(edict: Edict): Promise<MinistryTask[]> {
-    const lastPlan = edict.messages.filter(m => m.role === "zhongshu").pop();
-    let inferredTasks: Array<{ ministry: MinistryId; description: string }>;
+  private createMinistryTask(edict: Edict, task: { ministry: MinistryId; description: string }): MinistryTask {
+    return {
+      id: generateTaskId(),
+      edictId: edict.id,
+      ministry: task.ministry,
+      description: task.description,
+      status: "pending",
+    };
+  }
 
+  private async dispatchTasks(edict: Edict): Promise<{
+    tasks: MinistryTask[];
+    metadata?: Record<string, unknown>;
+  }> {
+    const lastPlan = edict.messages.filter(m => m.role === "zhongshu").pop();
+    try {
+      const runtimeDispatch = await this.runtime?.dispatchTasks?.(edict, lastPlan?.content ?? "{}");
+
+      if (runtimeDispatch) {
+        return {
+          tasks: runtimeDispatch.tasks.map((task) => this.createMinistryTask(edict, task)),
+          metadata: {
+            source: "client",
+            sessionID: runtimeDispatch.sessionID,
+            providerID: runtimeDispatch.providerID,
+            modelID: runtimeDispatch.modelID,
+            raw: runtimeDispatch.raw,
+          },
+        };
+      }
+    } catch (runtimeError) {
+      const error = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
+      const sessionID = typeof (runtimeError as { sessionID?: unknown }).sessionID === "string"
+        ? (runtimeError as { sessionID: string }).sessionID
+        : undefined;
+      const providerID = typeof (runtimeError as { providerID?: unknown }).providerID === "string"
+        ? (runtimeError as { providerID: string }).providerID
+        : undefined;
+      const modelID = typeof (runtimeError as { modelID?: unknown }).modelID === "string"
+        ? (runtimeError as { modelID: string }).modelID
+        : undefined;
+      const raw = typeof (runtimeError as { raw?: unknown }).raw === "string"
+        ? (runtimeError as { raw: string }).raw
+        : undefined;
+
+      let inferredTasks: Array<{ ministry: MinistryId; description: string }>;
+      try {
+        const parsed = JSON.parse(lastPlan?.content || "{}");
+        inferredTasks = parsed.tasks || this.inferTasks(edict.description);
+      } catch {
+        inferredTasks = this.inferTasks(edict.description);
+      }
+
+      return {
+        tasks: inferredTasks.map((task) => this.createMinistryTask(edict, task)),
+        metadata: {
+          source: "local",
+          fallback: "local",
+          fallbackFrom: "client",
+          error,
+          ...(sessionID ? { sessionID } : {}),
+          ...(providerID ? { providerID } : {}),
+          ...(modelID ? { modelID } : {}),
+          ...(raw ? { raw } : {}),
+        },
+      };
+    }
+
+    let inferredTasks: Array<{ ministry: MinistryId; description: string }>;
     try {
       const parsed = JSON.parse(lastPlan?.content || "{}");
       inferredTasks = parsed.tasks || this.inferTasks(edict.description);
@@ -879,16 +959,10 @@ export class TangDynastyOrchestrator {
       inferredTasks = this.inferTasks(edict.description);
     }
 
-    return inferredTasks.map(t => {
-      const task: MinistryTask = {
-        id: generateTaskId(),
-        edictId: edict.id,
-        ministry: t.ministry,
-        description: t.description,
-        status: "pending",
-      };
-      return task;
-    });
+    return {
+      tasks: inferredTasks.map((task) => this.createMinistryTask(edict, task)),
+      metadata: { source: "local" },
+    };
   }
 
   private async executeParallel(edict: Edict, tasks: MinistryTask[]): Promise<void> {
@@ -994,11 +1068,25 @@ export class TangDynastyOrchestrator {
 
   private async executeTaskAttempt(edict: Edict, task: MinistryTask, reviewFeedback?: string): Promise<boolean> {
     let localFallbackMetadata: Record<string, unknown> | undefined;
+    const runtimeAttemptLimit = task.ministry === "works" ? 2 : 1;
+    let lastRuntimeFailure:
+      | {
+          error: string;
+          sessionID?: string;
+          raw?: string;
+          providerID?: string;
+          modelID?: string;
+        }
+      | undefined;
 
-    try {
-      const runtimeExecution = await this.runtime?.executeTask(edict, task, reviewFeedback);
+    for (let runtimeAttempt = 1; runtimeAttempt <= runtimeAttemptLimit; runtimeAttempt += 1) {
+      try {
+        const runtimeExecution = await this.runtime?.executeTask(edict, task, reviewFeedback);
 
-      if (runtimeExecution) {
+        if (!runtimeExecution) {
+          break;
+        }
+
         if (runtimeExecution.status === "completed") {
           task.status = runtimeExecution.status;
           task.result = runtimeExecution.result;
@@ -1006,9 +1094,12 @@ export class TangDynastyOrchestrator {
           task.audit = {
             executionSource: "client",
             clientStatus: runtimeExecution.status,
+            clientAttemptCount: runtimeAttempt,
             clientError: runtimeExecution.error,
             clientRaw: runtimeExecution.raw,
             clientSessionID: runtimeExecution.sessionID,
+            clientProviderID: runtimeExecution.providerID,
+            clientModelID: runtimeExecution.modelID,
           };
           this.emitForEdict(
             edict,
@@ -1017,11 +1108,21 @@ export class TangDynastyOrchestrator {
             {
               source: "client",
               sessionID: runtimeExecution.sessionID,
+              providerID: runtimeExecution.providerID,
+              modelID: runtimeExecution.modelID,
               raw: runtimeExecution.raw,
             },
           );
           return true;
         }
+
+        lastRuntimeFailure = {
+          error: runtimeExecution.error ?? "OpenCode runtime execution failed.",
+          sessionID: runtimeExecution.sessionID,
+          raw: runtimeExecution.raw,
+          providerID: runtimeExecution.providerID,
+          modelID: runtimeExecution.modelID,
+        };
 
         this.emitForEdict(
           edict,
@@ -1030,53 +1131,84 @@ export class TangDynastyOrchestrator {
           {
             source: "client",
             sessionID: runtimeExecution.sessionID,
+            providerID: runtimeExecution.providerID,
+            modelID: runtimeExecution.modelID,
             raw: runtimeExecution.raw,
             error: runtimeExecution.error,
-            fallback: "local",
+            ...(runtimeAttempt >= runtimeAttemptLimit ? { fallback: "local" } : {}),
           },
         );
 
+        if (runtimeAttempt < runtimeAttemptLimit) {
+          continue;
+        }
+      } catch (runtimeError) {
+        const runtimeErrorMessage = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
+        const runtimeSessionID = typeof (runtimeError as { sessionID?: unknown }).sessionID === "string"
+          ? (runtimeError as { sessionID: string }).sessionID
+          : undefined;
+        const runtimeRaw = typeof (runtimeError as { raw?: unknown }).raw === "string"
+          ? (runtimeError as { raw: string }).raw
+          : undefined;
+        const runtimeProviderID = typeof (runtimeError as { providerID?: unknown }).providerID === "string"
+          ? (runtimeError as { providerID: string }).providerID
+          : undefined;
+        const runtimeModelID = typeof (runtimeError as { modelID?: unknown }).modelID === "string"
+          ? (runtimeError as { modelID: string }).modelID
+          : undefined;
+
+        lastRuntimeFailure = {
+          error: runtimeErrorMessage,
+          sessionID: runtimeSessionID,
+          raw: runtimeRaw,
+          providerID: runtimeProviderID,
+          modelID: runtimeModelID,
+        };
+
+        this.emitForEdict(
+          edict,
+          task.ministry,
+          "Failed: " + task.description,
+          {
+            source: "client",
+            error: runtimeErrorMessage,
+            ...(runtimeSessionID ? { sessionID: runtimeSessionID } : {}),
+            ...(runtimeRaw ? { raw: runtimeRaw } : {}),
+            ...(runtimeProviderID ? { providerID: runtimeProviderID } : {}),
+            ...(runtimeModelID ? { modelID: runtimeModelID } : {}),
+            ...(runtimeAttempt >= runtimeAttemptLimit ? { fallback: "local" } : {}),
+          },
+        );
+
+        if (runtimeAttempt < runtimeAttemptLimit) {
+          continue;
+        }
+      }
+
+      if (lastRuntimeFailure) {
         localFallbackMetadata = {
           source: "local",
           fallbackFrom: "client",
-          clientError: runtimeExecution.error,
-          clientRaw: runtimeExecution.raw,
-          clientSessionID: runtimeExecution.sessionID,
+          clientAttemptCount: runtimeAttemptLimit,
+          clientError: lastRuntimeFailure.error,
+          ...(lastRuntimeFailure.sessionID ? { clientSessionID: lastRuntimeFailure.sessionID } : {}),
+          ...(lastRuntimeFailure.raw ? { clientRaw: lastRuntimeFailure.raw } : {}),
+          ...(lastRuntimeFailure.providerID ? { providerID: lastRuntimeFailure.providerID } : {}),
+          ...(lastRuntimeFailure.modelID ? { modelID: lastRuntimeFailure.modelID } : {}),
         };
         task.audit = {
           executionSource: "local",
           fallbackFrom: "client",
-          clientStatus: runtimeExecution.status,
-          clientError: runtimeExecution.error,
-          clientRaw: runtimeExecution.raw,
-          clientSessionID: runtimeExecution.sessionID,
+          clientStatus: "failed",
+          clientAttemptCount: runtimeAttemptLimit,
+          clientError: lastRuntimeFailure.error,
+          ...(lastRuntimeFailure.sessionID ? { clientSessionID: lastRuntimeFailure.sessionID } : {}),
+          ...(lastRuntimeFailure.raw ? { clientRaw: lastRuntimeFailure.raw } : {}),
+          ...(lastRuntimeFailure.providerID ? { clientProviderID: lastRuntimeFailure.providerID } : {}),
+          ...(lastRuntimeFailure.modelID ? { clientModelID: lastRuntimeFailure.modelID } : {}),
         };
       }
-    } catch (runtimeError) {
-      const runtimeErrorMessage = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
-
-      this.emitForEdict(
-        edict,
-        task.ministry,
-        "Failed: " + task.description,
-        {
-          source: "client",
-          error: runtimeErrorMessage,
-          fallback: "local",
-        },
-      );
-
-      localFallbackMetadata = {
-        source: "local",
-        fallbackFrom: "client",
-        clientError: runtimeErrorMessage,
-      };
-      task.audit = {
-        executionSource: "local",
-        fallbackFrom: "client",
-        clientStatus: "failed",
-        clientError: runtimeErrorMessage,
-      };
+      break;
     }
 
     const ministry = MINISTRIES[task.ministry];
@@ -1125,9 +1257,12 @@ export class TangDynastyOrchestrator {
         executionSource?: "client" | "local";
         fallbackFrom?: "client";
         clientStatus?: "completed" | "failed";
+        clientAttemptCount?: number;
         clientError?: string;
         clientRaw?: string;
         clientSessionID?: string;
+        clientProviderID?: string;
+        clientModelID?: string;
         attemptCount?: number;
         reviewStatus?: "approve" | "reject";
         reviewReasons?: string[];
@@ -1156,9 +1291,12 @@ export class TangDynastyOrchestrator {
               executionSource?: "client" | "local";
               fallbackFrom?: "client";
               clientStatus?: "completed" | "failed";
+              clientAttemptCount?: number;
               clientError?: string;
               clientRaw?: string;
               clientSessionID?: string;
+              clientProviderID?: string;
+              clientModelID?: string;
               attemptCount?: number;
               reviewStatus?: "approve" | "reject";
               reviewReasons?: string[];
@@ -1188,8 +1326,13 @@ export class TangDynastyOrchestrator {
     executionSource: "client" | "local";
     fallbackFrom?: "client";
     attemptCount?: number;
+    clientAttemptCount?: number;
     reviewStatus?: "approve" | "reject";
   }): string {
+    if (entry.executionSource === "client" && (entry.clientAttemptCount ?? 1) > 1) {
+      return `Completed through OpenCode client execution after ${entry.clientAttemptCount} runtime attempts.`;
+    }
+
     if ((entry.attemptCount ?? 1) > 1 && entry.reviewStatus === "approve") {
       return `Completed after ${entry.attemptCount} execution attempts following Menxia execution review.`;
     }
@@ -1199,6 +1342,10 @@ export class TangDynastyOrchestrator {
     }
 
     if (entry.fallbackFrom === "client") {
+      if ((entry.clientAttemptCount ?? 1) > 1) {
+        return `Completed locally after ${entry.clientAttemptCount} OpenCode client execution failures.`;
+      }
+
       return "Completed locally after OpenCode client execution failed.";
     }
 
@@ -1506,8 +1653,11 @@ export class TangDynastyOrchestrator {
             const audit = result.audit;
             const executionSource = audit?.executionSource ?? "local";
             const fallbackFrom = audit?.fallbackFrom;
+            const clientAttemptCount = audit?.clientAttemptCount;
             const clientError = audit?.clientError;
             const clientSessionID = audit?.clientSessionID;
+            const clientProviderID = audit?.clientProviderID;
+            const clientModelID = audit?.clientModelID;
             const clientRaw = audit?.clientRaw;
             const attemptCount = audit?.attemptCount;
             const reviewStatus = audit?.reviewStatus;
@@ -1518,8 +1668,11 @@ export class TangDynastyOrchestrator {
               status: result.status,
               executionSource,
               fallbackFrom,
+              ...(clientAttemptCount ? { clientAttemptCount } : {}),
               clientError,
               clientSessionID,
+              ...(clientProviderID ? { clientProviderID } : {}),
+              ...(clientModelID ? { clientModelID } : {}),
               ...(this.shouldIncludeDiagnosticsRaw(edict.id, result.ministry, clientRaw, query) ? { clientRaw } : {}),
               ...(attemptCount ? { attemptCount } : {}),
               ...(reviewStatus ? { reviewStatus } : {}),
@@ -1529,6 +1682,7 @@ export class TangDynastyOrchestrator {
                 executionSource,
                 fallbackFrom,
                 attemptCount,
+                clientAttemptCount,
                 reviewStatus,
               }),
             };
@@ -1764,6 +1918,8 @@ export class TangDynastyOrchestrator {
     const fallback = message.metadata?.fallback;
     const fallbackFrom = message.metadata?.fallbackFrom;
     const sessionID = message.metadata?.sessionID;
+    const providerID = message.metadata?.providerID;
+    const modelID = message.metadata?.modelID;
     const error = message.metadata?.error;
 
     return {
@@ -1774,6 +1930,8 @@ export class TangDynastyOrchestrator {
       fallback: fallback === "local" ? "local" : undefined,
       fallbackFrom: fallbackFrom === "client" ? "client" : undefined,
       sessionID: typeof sessionID === "string" ? sessionID : undefined,
+      providerID: typeof providerID === "string" ? providerID : undefined,
+      modelID: typeof modelID === "string" ? modelID : undefined,
       error: typeof error === "string" ? error : undefined,
     };
   }

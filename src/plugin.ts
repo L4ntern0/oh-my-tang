@@ -41,8 +41,8 @@ function resolveHealthRiskProfileFromEnv(
 }
 
 const TangDynastyPlugin: Plugin = async (input) => {
-  const runtime = createOpenCodeTangRuntime(input.client, input.worktree);
   const resolvedConfig = resolveTangConfig(input.worktree);
+  const runtime = createOpenCodeTangRuntime(input.client, input.worktree, resolvedConfig.config.agentModels);
   const resolvedHealthRiskProfile = resolveHealthRiskProfileFromEnv({
     profile: resolvedConfig.config.healthRiskProfile ?? "balanced",
     source: resolvedConfig.config.healthRiskProfileSource ?? "default",
@@ -57,6 +57,7 @@ const TangDynastyPlugin: Plugin = async (input) => {
     healthRiskProfileWarning: resolvedHealthRiskProfile.warning,
     enableParallelExecution: resolvedConfig.config.enableParallelExecution,
     verbose: resolvedConfig.config.verbose,
+    agentModels: resolvedConfig.config.agentModels ?? {},
     configWarnings: resolvedConfig.warnings,
     configFile: resolvedConfig.configFile,
   }, undefined, runtime);

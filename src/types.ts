@@ -29,6 +29,15 @@ export type MinistryId =
 
 export type AgentRole = DepartmentId | MinistryId;
 
+export type TangRuntimeAgentId = "zhongshu" | "menxia" | "shangshu" | MinistryId;
+
+export interface TangModelConfig {
+  providerID: string;
+  modelID: string;
+}
+
+export type TangAgentModelConfigMap = Partial<Record<TangRuntimeAgentId, TangModelConfig>>;
+
 export interface AgentMessage {
   role: AgentRole;
   content: string;
@@ -74,9 +83,12 @@ export interface TaskExecutionAudit {
   executionSource: "client" | "local";
   fallbackFrom?: "client";
   clientStatus?: "completed" | "failed";
+  clientAttemptCount?: number;
   clientError?: string;
   clientRaw?: string;
   clientSessionID?: string;
+  clientProviderID?: string;
+  clientModelID?: string;
   attemptCount?: number;
   reviewStatus?: "approve" | "reject";
   reviewReasons?: string[];
@@ -114,6 +126,8 @@ export interface AuditTimelineEvent {
   fallback?: "local";
   fallbackFrom?: "client";
   sessionID?: string;
+  providerID?: string;
+  modelID?: string;
   error?: string;
 }
 
@@ -129,8 +143,11 @@ export interface MinistryAuditDiagnosticsEntry {
   status: MinistryTask["status"];
   executionSource: "client" | "local";
   fallbackFrom?: "client";
+  clientAttemptCount?: number;
   clientError?: string;
   clientSessionID?: string;
+  clientProviderID?: string;
+  clientModelID?: string;
   clientRaw?: string;
   attemptCount?: number;
   reviewStatus?: "approve" | "reject";
@@ -290,6 +307,10 @@ export interface TangConfigReport {
     verbose: boolean;
     meaning: string;
   };
+  models: {
+    agentModels: TangAgentModelConfigMap;
+    meaning: string;
+  };
 }
 
 export type AuditTrailView = "entries" | "summary" | "timeline" | "anomaly" | "hotspots" | "health" | "diagnostics";
@@ -407,6 +428,7 @@ export interface PluginConfig {
   healthRiskProfileWarning?: string;
   enableParallelExecution: boolean;
   verbose: boolean;
+  agentModels: TangAgentModelConfigMap;
   configWarnings?: string[];
   configFile?: TangConfigFileMetadata;
 }
