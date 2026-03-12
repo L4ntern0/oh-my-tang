@@ -58,6 +58,7 @@ export type EdictStatus =
   | "dispatched"  // 尚书省 has dispatched to ministries
   | "executing"   // Ministries are executing
   | "completed"   // All work finished
+  | "completed_fallback" // All work finished, but at least one task used local fallback
   | "failed";     // Execution failed
 
 export interface MinistryTask {
@@ -65,7 +66,7 @@ export interface MinistryTask {
   edictId: string;
   ministry: MinistryId;
   description: string;
-  status: "pending" | "active" | "completed" | "failed";
+  status: "pending" | "active" | "completed" | "completed_fallback" | "failed";
   result?: string;
   error?: string;
   audit?: TaskExecutionAudit;
@@ -92,7 +93,7 @@ export interface TaskExecutionAudit {
 
 export interface MinistryAuditTrailEntry {
   ministry: MinistryId;
-  status: "pending" | "active" | "completed" | "failed";
+  status: "pending" | "active" | "completed" | "completed_fallback" | "failed";
   executionSource: "client" | "local";
   fallbackFrom?: "client";
   clientStatus?: "completed" | "failed";

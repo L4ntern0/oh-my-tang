@@ -21,6 +21,7 @@ import type {
   AuditTrailQuery,
   DepartmentId,
   Edict,
+  EdictStatus,
   EdictAuditAnomaly,
   EdictAuditTrailEntry,
   EdictAuditTimeline,
@@ -75,6 +76,14 @@ function compareEdictsNewestFirst(left: Edict, right: Edict): number {
   }
 
   return getEdictSequence(right.id) - getEdictSequence(left.id);
+}
+
+function isTaskSuccessful(status: MinistryTask["status"]): boolean {
+  return status === "completed" || status === "completed_fallback";
+}
+
+function isEdictSuccessful(status: EdictStatus): boolean {
+  return status === "completed" || status === "completed_fallback";
 }
 
 const PIPELINE_STAGES: readonly {
@@ -588,8 +597,9 @@ export class TangDynastyOrchestrator {
     }
 
     // Check results
-    const allCompleted = dispatchResult.tasks.every(t => t.status === "completed");
-    edict.status = allCompleted ? "completed" : "failed";
+    const allCompleted = dispatchResult.tasks.every((task) => isTaskSuccessful(task.status));
+    const usedFallback = dispatchResult.tasks.some((task) => task.status === "completed_fallback");
+    edict.status = allCompleted ? (usedFallback ? "completed_fallback" : "completed") : "failed";
     edict.updatedAt = Date.now();
 
     this.setPhase("completing");
@@ -776,7 +786,7 @@ export class TangDynastyOrchestrator {
     const reasons: string[] = [];
     const amendments: string[] = [];
 
-    if (task.status !== "completed") {
+    if (!isTaskSuccessful(task.status)) {
       reasons.push(task.error ? `Execution failed: ${task.error}` : "Execution did not complete successfully.");
       amendments.push("Retry the ministry task and resolve the execution error before resubmitting.");
     }
@@ -1271,18 +1281,24 @@ export class TangDynastyOrchestrator {
     }
 
     const ministry = this.config.ministries[task.ministry];
+    const usedFallback = Boolean(lastRuntimeFailure);
     task.result = ministry
-      ? `[${ministry.chineseName} ${ministry.name}] Completed: ${task.description}`
-      : `Completed: ${task.description}`;
-    task.status = "completed";
+      ? `[${ministry.chineseName} ${ministry.name}] ${usedFallback ? "Completed (fallback)" : "Completed"}: ${task.description}`
+      : `${usedFallback ? "Completed (fallback)" : "Completed"}: ${task.description}`;
+    task.status = usedFallback ? "completed_fallback" : "completed";
     task.error = undefined;
     task.audit ??= { executionSource: "local" };
-    this.emitForEdict(edict, task.ministry, `Completed: ${task.description}`, localFallbackMetadata ?? { source: "local" });
+    this.emitForEdict(
+      edict,
+      task.ministry,
+      `${usedFallback ? "Completed (fallback)" : "Completed"}: ${task.description}`,
+      localFallbackMetadata ?? { source: "local" },
+    );
     return true;
   }
 
   private buildSummary(edict: Edict, tasks: MinistryTask[]): string {
-    const completed = tasks.filter(t => t.status === "completed").length;
+    const completed = tasks.filter((task) => isTaskSuccessful(task.status)).length;
     const failed = tasks.filter(t => t.status === "failed").length;
     const elapsed = Date.now() - edict.createdAt;
 
@@ -1781,7 +1797,7 @@ export class TangDynastyOrchestrator {
 
   getAuditHealth(): AuditHealthReport {
     const edicts = this.getEdicts();
-    const completedEdicts = edicts.filter((edict) => edict.status === "completed");
+    const completedEdicts = edicts.filter((edict) => isEdictSuccessful(edict.status));
     const completedWithoutSummary = completedEdicts.filter((edict) => !this.getEdictSummaryPayload(edict));
     const activeTaskCount = this.state.activeTasks.size;
     const remainingBudget = Math.max(0, this.state.tokenBudget.total - this.state.tokenBudget.used);
@@ -2024,7 +2040,7 @@ export class TangDynastyOrchestrator {
       return this.state.phase;
     }
 
-    if (latestEdict.status === "completed") {
+    if (isEdictSuccessful(latestEdict.status)) {
       return undefined;
     }
 
@@ -2040,6 +2056,9 @@ export class TangDynastyOrchestrator {
       case "executing":
       case "failed":
         return "executing";
+      case "completed":
+      case "completed_fallback":
+        return undefined;
     }
   }
 
@@ -2051,7 +2070,7 @@ export class TangDynastyOrchestrator {
       }));
     }
 
-    if (this.state.phase === "idle" && latestEdict.status === "completed") {
+    if (this.state.phase === "idle" && isEdictSuccessful(latestEdict.status)) {
       return PIPELINE_STAGES.map((stage) => ({
         ...stage,
         status: "completed",

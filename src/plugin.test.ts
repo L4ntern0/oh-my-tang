@@ -603,7 +603,7 @@ describe("TangDynastyPlugin", () => {
     expect(timeline).toHaveLength(1);
     expect(events.some((event: { role: string; content: string }) => event.role === "works" && event.content.startsWith("Starting:"))).toBe(true);
     expect(events.some((event: { source?: string; fallback?: string; role: string; content: string }) => event.role === "works" && event.content.startsWith("Failed:") && event.source === "client" && event.fallback === "local")).toBe(true);
-    expect(events.some((event: { source?: string; fallbackFrom?: string; role: string; content: string }) => event.role === "works" && event.content.startsWith("Completed:") && event.source === "local" && event.fallbackFrom === "client")).toBe(true);
+    expect(events.some((event: { source?: string; fallbackFrom?: string; role: string; content: string }) => event.role === "works" && event.content.startsWith("Completed (fallback):") && event.source === "local" && event.fallbackFrom === "client")).toBe(true);
   });
 
   test("tang_audit can return an anomaly view for problematic edicts", async () => {
@@ -688,7 +688,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "fallback anomaly scaffold",
-        status: "completed",
+        status: "completed_fallback",
         reasons: [
           {
             type: "fallback_heavy",
@@ -747,14 +747,16 @@ describe("TangDynastyPlugin", () => {
       },
       createToolContext(worktree),
     );
+    const pipelineOutput = await plugin.tool?.tang_pipeline.execute({}, createToolContext(worktree));
 
     const diagnostics = JSON.parse(output ?? "[]");
+    const pipeline = JSON.parse(pipelineOutput ?? "{}");
 
     expect(diagnostics).toEqual([
       {
         edictId: expect.any(String),
         title: "fallback diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 1,
           clientExecutions: 0,
@@ -764,7 +766,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -775,6 +777,10 @@ describe("TangDynastyPlugin", () => {
         ],
       },
     ]);
+    expect(pipeline.latestEdict).toMatchObject({
+      title: "fallback diagnostics scaffold",
+      status: "completed_fallback",
+    });
     expect("clientRaw" in diagnostics[0].ministries[0]).toBe(false);
   });
 
@@ -842,7 +848,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "fallback anomaly scaffold",
-        status: "completed",
+        status: "completed_fallback",
         reasons: [
           {
             type: "fallback_heavy",
@@ -937,7 +943,7 @@ describe("TangDynastyPlugin", () => {
         {
           edictId: expect.any(String),
           title: "fallback anomaly scaffold",
-          status: "completed",
+          status: "completed_fallback",
           reasons: [
             {
               type: "fallback_heavy",
@@ -1406,7 +1412,7 @@ describe("TangDynastyPlugin", () => {
     const edict = JSON.parse(output ?? "{}");
     const summary = JSON.parse(edict.messages.at(-1)?.content ?? "{}");
 
-    expect(edict.status).toBe("completed");
+    expect(edict.status).toBe("completed_fallback");
     expect(summary).toMatchObject({
       summary: {
         totalTasks: 1,
@@ -1416,7 +1422,7 @@ describe("TangDynastyPlugin", () => {
       results: [
         expect.objectContaining({
           ministry: "works",
-          status: "completed",
+          status: "completed_fallback",
         }),
       ],
     });
@@ -1426,7 +1432,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
           },
         ],
       },
@@ -2278,7 +2284,7 @@ describe("TangDynastyPlugin", () => {
     expect(executionAttempt).toBe(2);
     expect(diagnostics[0].ministries[0]).toMatchObject({
       ministry: "works",
-      status: "completed",
+      status: "completed_fallback",
       executionSource: "local",
       fallbackFrom: "client",
       clientProviderID: "cliproxy",
@@ -2341,7 +2347,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "fallback diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 1,
           clientExecutions: 0,
@@ -2351,7 +2357,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2417,7 +2423,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "fallback diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 1,
           clientExecutions: 0,
@@ -2427,7 +2433,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2495,7 +2501,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: first.id,
         title: "first diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 2,
           clientExecutions: 0,
@@ -2505,7 +2511,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2516,7 +2522,7 @@ describe("TangDynastyPlugin", () => {
           },
           {
             ministry: "rites",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 1,
@@ -2529,7 +2535,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "second diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 2,
           clientExecutions: 0,
@@ -2539,7 +2545,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2549,7 +2555,7 @@ describe("TangDynastyPlugin", () => {
           },
           {
             ministry: "rites",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 1,
@@ -2616,7 +2622,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: first.id,
         title: "first diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 2,
           clientExecutions: 0,
@@ -2626,7 +2632,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2637,7 +2643,7 @@ describe("TangDynastyPlugin", () => {
           },
           {
             ministry: "rites",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 1,
@@ -2650,7 +2656,7 @@ describe("TangDynastyPlugin", () => {
       {
         edictId: expect.any(String),
         title: "second diagnostics scaffold",
-        status: "completed",
+        status: "completed_fallback",
         summary: {
           totalTasks: 2,
           clientExecutions: 0,
@@ -2660,7 +2666,7 @@ describe("TangDynastyPlugin", () => {
         ministries: [
           {
             ministry: "works",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 2,
@@ -2670,7 +2676,7 @@ describe("TangDynastyPlugin", () => {
           },
           {
             ministry: "rites",
-            status: "completed",
+            status: "completed_fallback",
             executionSource: "local",
             fallbackFrom: "client",
             clientAttemptCount: 1,
